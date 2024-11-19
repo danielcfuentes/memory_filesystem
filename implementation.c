@@ -236,6 +236,27 @@
 
 /* Helper types and functions */
 
+//Overall Process
+// A. When Filesystem Starts:
+//    1. Get memory pointer (fsptr) and size
+//    2. Check if initialized (magic number)
+//    3. If not, set up initial structures
+
+// B. When Creating a File:
+//    1. Find free space (from free_list)
+//    2. Create file entry
+//    3. Link it into directory structure
+//    4. Update free space tracking
+
+// C. When Reading/Writing:
+//    1. Find file in directory structure
+//    2. Access its data using offsets
+//    3. Perform operation
+
+// D. When Unmounting:
+//    1. Save to backup file (if using one)
+//    2. All offsets remain valid for next mount
+
 /* YOUR HELPER FUNCTIONS GO HERE */
 
 /* End of helper functions */
