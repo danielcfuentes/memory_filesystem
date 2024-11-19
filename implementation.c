@@ -259,6 +259,15 @@
 
 /* YOUR HELPER FUNCTIONS GO HERE */
 
+//magic number for initialization check
+#define MAGIC_NUM 0x77777777
+//size of each block
+#define MYFS_BLOCK_SIZE 1024
+//max filename length
+#define MYFS_MAX_FILENAME 255
+//max path length
+#define MYFS_MAX_PATH 4096
+
 /* End of helper functions */
 
 /* Implements an emulation of the stat system call on the filesystem 
