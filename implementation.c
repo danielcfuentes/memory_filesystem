@@ -268,6 +268,10 @@
 //max path length
 #define MYFS_MAX_PATH 4096
 
+//file types
+#define MYFS_TYPE_FILE 0
+#define MYFS_TYPE_DIR 1
+
 //offset type def
 typedef size_t myfs_offset_t;
 
@@ -326,11 +330,82 @@ static inline void offset_to_ptr(void *fsptr, myfs_offset_t offset) {
 
 //convert pointer to offset
 static inline myfs_offset_t ptr_to_offset(void *fsptr, void *ptr) {
-      if (ptr == NULL || ptr < fsptr) {
+      if (ptr == NULL || ptr < fsptr || fsptr == NULL) {
             return 0;
       }
       //distance from the start
       return (char *)ptr - (char *)fsptr;
+}
+
+//TODO: implement a fucntion to intialize the filesystem
+//the order for our fs is HEADER -> ROOT DIR -> FREE SPACE
+static int intalize_filesystem(void *fsptr, size_t fssize) {
+      //check if mem region is large enough for header plus root dir
+      if (fssize < sizeof(myfs_header_t) + MYFS_BLOCK_SIZE) {
+            return -1;
+      }
+
+      //initialize fs header
+      myfs_header_t *header = (myfs_header_t *)fsptr;
+      //set magic number
+      header->magic = MAGIC_NUM;
+      //set block size
+      header->block_size = MYFS_BLOCK_SIZE;
+
+      //calcluate the total blocks
+      header->total_blocks = (fssize - sizeof(myfs_header_t)) / MYFS_BLOCK_SIZE;
+      //set free blocks to total blocks and remove one for the root
+      header->free_blocks = header->total_blocks - 1;
+
+      //set root dir location
+      header->root_dir = sizeof(myfs_header_t);
+
+      //set first free block list
+      header->free_list = header->root_dir + sizeof(myfs_file_t);
+
+      //initalize first free block
+      myfs_block_header_t *first_free_block = offset_to_ptr(fsptr, header->free_list);
+      first_free_block->next = 0;
+      first_free_block->size = (header->total_blocks - 1) * MYFS_BLOCK_SIZE;
+
+      //set root dir
+      myfs_file_t *root_dir = offset_to_ptr(fsptr, header->root_dir);
+      memset(root_dir, 0, sizeof(myfs_file_t));
+      strcpy(root_dir->name, "/");
+      root_dir->type = MYFS_TYPE_DIR;
+      root_dir->next = 0;
+      root_dir->parent = 0;
+      root_dir->size = 0;
+      root_dir->data_block = 0;
+      
+      return 0;
+}
+
+//function to check if the filestysem is already initalized
+static int is_initialized(void *fsptr, size_t fssize) {
+      //check pointer and size are good
+      if (fsptr == NULL || fssize < sizeof(myfs_header_t)) {
+            return 0;
+      }
+      //get header
+      myfs_header_t *header = (myfs_header_t *)fsptr;
+      //check if initialized
+      return (header->magic == MAGIC_NUM);
+}
+
+//fucntion to intialize if needed and return header
+static myfs_header_t *get_fs_header(void *fsptr, size_t fssize, int *errnoptr) {
+      //check if initialized
+      if (!is_initialized(fsptr, fssize)) {
+            //initialize
+            if (intalize_filesystem(fsptr, fssize) != 0) {
+                  //error
+                  *errnoptr = EFAULT;
+                  return NULL;
+            }
+      }
+      //get header
+      return (myfs_header_t *)fsptr;
 }
 
 /* End of helper functions */
