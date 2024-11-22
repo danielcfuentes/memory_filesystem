@@ -413,6 +413,82 @@ static myfs_header_t *get_fs_header(void *fsptr, size_t fssize, int *errnoptr) {
       return (myfs_header_t *)fsptr;
 }
 
+//function to free a block of mem
+static void free_block(void *fsptr, myfs_offset_t offset) {
+      if(offset == 0) {
+            return;
+      }
+
+      //get fs header
+      myfs_header_t *header = (myfs_header_t *)fsptr;
+
+      //find the start of the block
+      myfs_offset_t block_start = offset - sizeof(myfs_block_header_t);
+
+      //get ptr to block header
+      myfs_block_header_t *block_header = offset_to_ptr(fsptr, block_start);
+
+      //add block to the beginning of the free list like adding to the start of a linked list
+      //point to curr first block
+      block_header->next = header->free_list;
+      //set new first block to the block we just added
+      header->free_list = block_start;
+      //update data
+      header->free_blocks++;
+}
+
+//function to allocate a block of mem given the fsptr and the size of mem wanted
+static myfs_offset_t allocate_block(void *fsptr, size_t size) {
+      //get fs header
+      myfs_header_t *header = (myfs_header_t *)fsptr;
+
+      //keep track of curr and prev blocks while traversing the free list
+      myfs_offset_t curr_block_offset = header->free_list;
+      myfs_offset_t prev_block_offset = 0;
+
+      //get total size needed including the size of mem wanted and the block header
+      size_t required_size = size + sizeof(myfs_block_header_t);
+
+      //get the nearest block size
+      required_size = ((required_size + MYFS_BLOCK_SIZE - 1) / MYFS_BLOCK_SIZE) * MYFS_BLOCK_SIZE;
+
+      //traverse the free list until we find a blog big enough for spaced needed
+      while (curr_block_offset != 0) {
+            //get ptr to curr block
+            myfs_block_header_t *curr_block_ptr = offset_to_ptr(fsptr, curr_block_offset);
+
+            //check if block is big enough
+            if (curr_block_ptr->size >= required_size) {
+                  
+                  //if it was first block then next becomes first
+                  if(prev_block_offset == 0){
+                        //set new first block
+                        header->free_list = curr_block_ptr->next;
+                  }
+                  else{
+                        //link prev to next
+                        myfs_block_header_t *prev_block_ptr = offset_to_ptr(fsptr, prev_block_offset);
+                        prev_block_ptr->next = curr_block_ptr->next;
+                  }
+
+                  //udate fs data
+                  header->free_blocks--;
+                  //mark the block as used
+                  curr_block_ptr->next = 0;
+
+                  //return offset to usable mem
+                  return curr_block_offset + sizeof(myfs_block_header_t);
+            }
+
+            //update prev and curr
+            prev_block_offset = curr_block_offset;
+            curr_block_offset = curr_block_ptr->next;
+      }
+
+      //no block big enough found
+      return 0;
+}     
+
 /* End of helper functions */
 
 /* Implements an emulation of the stat system call on the filesystem 
