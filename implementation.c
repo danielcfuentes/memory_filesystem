@@ -271,34 +271,67 @@
 //offset type def
 typedef size_t myfs_offset_t;
 
-struct myfs_block_header {
-      myfs_offset_t next;
-      size_t size;
-}; 
-typedef struct myfs_block_header myfs_block_header_t;
-
-//filesystem header struct
+//filesystem header struct, this goes start of mem and keeps track of filesystem info
 struct myfs_header_struct{
+      //check if filesutem is intialized or not
       uint32_t magic;
+      //where the root dir is located
       myfs_offset_t root_dir;
+      //first free block
       myfs_offset_t free_list;
+      //total num of blocks in filesystem
       size_t total_blocks;
+      //num of blocks that are free
       size_t free_blocks;
+      //size of each block
       size_t block_size;
 };
 typedef struct myfs_header_struct myfs_header_t;
 
-//file and directory entry struct
-struct myfs_file_struct{
-      char name[MYFS_MAX_FILENAME + 1];
-      uint32_t type;
-      myfs_offset_t data_block;
+//struct to manage mem blocks in filesystem kind of a linked list of free spaces
+struct myfs_block_header {
+      //points to next free block
       myfs_offset_t next;
+      //size of the curr block
+      size_t size;
+}; 
+typedef struct myfs_block_header myfs_block_header_t;
+
+
+//file and directory struct
+struct myfs_file_struct{
+      //name of file and + 1 for null terminator
+      char name[MYFS_MAX_FILENAME + 1];
+      //type of file is it a file or is it a dir
+      uint32_t type;
+      //where the content is stored
+      myfs_offset_t data_block;
+      //next file or dir in same dir
+      myfs_offset_t next;
+      //parent dir
       myfs_offset_t parent;
+      //size of the file
       size_t size;
 };
 typedef struct myfs_file_struct myfs_file_t;
 
+//convert offset to pointer
+static inline void offset_to_ptr(void *fsptr, myfs_offset_t offset) {
+      if (offset == 0) {
+            return NULL;
+      }
+      //add offset to base adress
+      return (char *)fsptr + offset;
+}
+
+//convert pointer to offset
+static inline myfs_offset_t ptr_to_offset(void *fsptr, void *ptr) {
+      if (ptr == NULL || ptr < fsptr) {
+            return 0;
+      }
+      //distance from the start
+      return (char *)ptr - (char *)fsptr;
+}
 
 /* End of helper functions */
 
