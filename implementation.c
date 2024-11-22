@@ -337,7 +337,7 @@ static inline myfs_offset_t ptr_to_offset(void *fsptr, void *ptr) {
       return (char *)ptr - (char *)fsptr;
 }
 
-//TODO: implement a fucntion to intialize the filesystem
+//a fucntion to intialize the filesystem
 //the order for our fs is HEADER -> ROOT DIR -> FREE SPACE
 static int intalize_filesystem(void *fsptr, size_t fssize) {
       //check if mem region is large enough for header plus root dir
@@ -352,7 +352,7 @@ static int intalize_filesystem(void *fsptr, size_t fssize) {
       //set block size
       header->block_size = MYFS_BLOCK_SIZE;
 
-      //calcluate the total blocks
+      //calcluate the total blocks (subtract header size from total size and then divide by block sinxe to get the num of blocks)
       header->total_blocks = (fssize - sizeof(myfs_header_t)) / MYFS_BLOCK_SIZE;
       //set free blocks to total blocks and remove one for the root
       header->free_blocks = header->total_blocks - 1;
@@ -360,24 +360,29 @@ static int intalize_filesystem(void *fsptr, size_t fssize) {
       //set root dir location
       header->root_dir = sizeof(myfs_header_t);
 
-      //set first free block list
+      //set first free block list which starts after the root dir
       header->free_list = header->root_dir + sizeof(myfs_file_t);
 
       //initalize first free block
+      //get ptr to first free block using the offset
       myfs_block_header_t *first_free_block = offset_to_ptr(fsptr, header->free_list);
+      //set next to zero since this is one big free splace block
       first_free_block->next = 0;
       first_free_block->size = (header->total_blocks - 1) * MYFS_BLOCK_SIZE;
 
       //set root dir
+      //get ptr to root dir using offset
       myfs_file_t *root_dir = offset_to_ptr(fsptr, header->root_dir);
+      //cleat all mem for root dir struct
       memset(root_dir, 0, sizeof(myfs_file_t));
+      //set root dir struct attributes
       strcpy(root_dir->name, "/");
       root_dir->type = MYFS_TYPE_DIR;
       root_dir->next = 0;
       root_dir->parent = 0;
       root_dir->size = 0;
       root_dir->data_block = 0;
-      
+
       return 0;
 }
 
