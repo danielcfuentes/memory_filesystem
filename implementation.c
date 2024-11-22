@@ -268,6 +268,38 @@
 //max path length
 #define MYFS_MAX_PATH 4096
 
+//offset type def
+typedef size_t myfs_offset_t;
+
+struct myfs_block_header {
+      myfs_offset_t next;
+      size_t size;
+}; 
+typedef struct myfs_block_header myfs_block_header_t;
+
+//filesystem header struct
+struct myfs_header_struct{
+      uint32_t magic;
+      myfs_offset_t root_dir;
+      myfs_offset_t free_list;
+      size_t total_blocks;
+      size_t free_blocks;
+      size_t block_size;
+};
+typedef struct myfs_header_struct myfs_header_t;
+
+//file and directory entry struct
+struct myfs_file_struct{
+      char name[MYFS_MAX_FILENAME + 1];
+      uint32_t type;
+      myfs_offset_t data_block;
+      myfs_offset_t next;
+      myfs_offset_t parent;
+      size_t size;
+};
+typedef struct myfs_file_struct myfs_file_t;
+
+
 /* End of helper functions */
 
 /* Implements an emulation of the stat system call on the filesystem 
