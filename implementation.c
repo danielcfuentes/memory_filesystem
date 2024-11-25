@@ -316,6 +316,11 @@ struct myfs_file_struct{
       myfs_offset_t parent;
       //size of the file
       size_t size;
+      //last accessed time
+      struct timespec last_access_time;
+      //last modifed time
+      struct timespec last_modified_time;
+
 };
 typedef struct myfs_file_struct myfs_file_t;
 
@@ -395,7 +400,11 @@ static int intalize_filesystem(void *fsptr, size_t fssize) {
       root_dir->parent = 0;
       root_dir->size = 0;
       root_dir->data_block = 0;
-
+      //set time stanps
+      root_dir->last_access_time.tv_sec = 0;
+      root_dir->last_access_time.tv_nsec =0;
+      root_dir->last_modified_time.tv_sec = 0;
+      root_dir->last_modified_time.tv_nsec =0;
       return 0;
 }
 
@@ -545,8 +554,68 @@ FUNCTIONS FOR PATHS
 int __myfs_getattr_implem(void *fsptr, size_t fssize, int *errnoptr,
                           uid_t uid, gid_t gid,
                           const char *path, struct stat *stbuf) {
-  /* STUB */
-  return -1;
+      //check if initialized
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      if(header == NULL){
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      //find the file/dir entru for given path
+      myfs_file_t *entry = 
+      if (entry == NULL){
+            return -1;
+      }
+
+      //intialized the stat buff
+
+      //clear all fields in stat struct
+      memset(stbuf, 0, sizeof(struct stat));
+
+      //fill basic info that is same from both dir and files
+      //user id of owner
+      stbuf -> st_uid = uid;
+      //group id of owner
+      stbuf -> st_gid = gid;
+
+      //check whethere its a file or a dir
+      if(entry->type == MYFS_TYPE_DIR){
+            //S_IFDIR indiactes dir from INODE(7) from man
+            stbuf->st_mode = S_IFDIR;
+
+            //ncount links start wirh 2 for "." and ".." entries
+            stbuf -> st_nlink = 2;
+
+            //count all subdir in this dir, each subsir adds a link because of its ..
+            myfs_offset_t child_offset = entry->data_block
+            while (child_offset != 0){
+                  myfs_file_t *child_entry_file = offset_to_ptr(fsptr, child);
+                  if (child_entry_file->type == MYFS_TYPE_DIR){
+                        stbuf -> st_nlink++;
+                  }
+                  child_offset = child_entry -> next;
+            }
+
+            //dir dont have a size
+            stbuf->st_size = 0;
+      }
+      //its a file
+      else{
+
+            stbuf -> st_mode = S_IFREG;
+
+            //reg files have on line
+            stbuf->st_nlink = 1;
+
+            //set size
+            stbuf->st_size = entry->size
+      }
+
+      //set time
+      stbuf->st_atim = entry->last_access_time;
+      stbuf->st_mtim = entry->last_modified_time;
+
+      return 0;
 }
 
 /* Implements an emulation of the readdir system call on the filesystem 
