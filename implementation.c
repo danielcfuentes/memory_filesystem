@@ -319,6 +319,12 @@ struct myfs_file_struct{
 };
 typedef struct myfs_file_struct myfs_file_t;
 
+/*
+
+FUNCTIONS FOR CONVERTING POINTERS TO OFFSETS AND OFFSETS TO POINTERS
+
+*/
+
 //convert offset to pointer
 static inline void offset_to_ptr(void *fsptr, myfs_offset_t offset) {
       if (offset == 0) {
@@ -336,6 +342,13 @@ static inline myfs_offset_t ptr_to_offset(void *fsptr, void *ptr) {
       //distance from the start
       return (char *)ptr - (char *)fsptr;
 }
+
+
+/*
+
+FUNCTIONS FOR INTIALIZING THE FILESYSTEM, CHECCKING IF FILESYSTEM IS ALREADY INITALIZED
+
+*/
 
 //a fucntion to intialize the filesystem
 //the order for our fs is HEADER -> ROOT DIR -> FREE SPACE
@@ -413,6 +426,12 @@ static myfs_header_t *get_fs_header(void *fsptr, size_t fssize, int *errnoptr) {
       return (myfs_header_t *)fsptr;
 }
 
+/*
+
+FUNCTIONS FOR MEMORY ALLOCATION
+
+*/
+
 //function to free a block of mem
 static void free_block(void *fsptr, myfs_offset_t offset) {
       if(offset == 0) {
@@ -488,6 +507,12 @@ static myfs_offset_t allocate_block(void *fsptr, size_t size) {
       //no block big enough found
       return 0;
 }     
+
+/*
+
+FUNCTIONS FOR PATHS
+
+*/
 
 /* End of helper functions */
 
