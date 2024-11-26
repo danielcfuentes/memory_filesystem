@@ -581,7 +581,7 @@ int __myfs_getattr_implem(void *fsptr, size_t fssize, int *errnoptr,
       //check whethere its a file or a dir
       if(entry->type == MYFS_TYPE_DIR){
             //S_IFDIR indiactes dir from INODE(7) from man
-            stbuf->st_mode = S_IFDIR;
+            stbuf->st_mode = S_IFDIR | 0755;
 
             //ncount links start wirh 2 for "." and ".." entries
             stbuf -> st_nlink = 2;
@@ -602,7 +602,7 @@ int __myfs_getattr_implem(void *fsptr, size_t fssize, int *errnoptr,
       //its a file
       else{
 
-            stbuf -> st_mode = S_IFREG;
+            stbuf -> st_mode = S_IFREG | 0755;
 
             //reg files have on line
             stbuf->st_nlink = 1;
@@ -656,8 +656,59 @@ int __myfs_getattr_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
                           const char *path, char ***namesptr) {
-  /* STUB */
-  return -1;
+
+      int entry_count = 0;
+
+      //check if insitalized and get header
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      if (header == NULL){
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      //find the dir
+      myfs_file_struct *dir = 
+      if (dir == NULL){
+            return -1
+      }
+
+      //make sure uts a type fo dir
+      if(dir->type != MYFS_TYPE_DIR){
+            *errnoptr = ENOTDIR;
+            return -1;
+      }
+
+      //count num of entries in dir
+      myfs_offset_t curr_offset = dir->data_block;
+      whule (curr_offset != 0){
+            entry_count++;
+            myfs_file_t *entry_file = offset_to_ptr(fsptr, curr_offset);
+            curr_offset = entry_file->next;
+      }
+
+      //checj if dir is empty
+      if (entry_count == 0){
+            *namesptr = NULL;
+            return 0;
+      }
+
+      //allocate array of char pointers for num of entries
+      *namesptr = calloc(entry_count, sizeof(char *));
+      if (*namesptr == NULL){
+            *errnoptr = EINVAL;
+            return -1;
+      }
+
+      //fill arr wuth the names of the files
+      curr_offset = dir->data_block;
+      int i = 0
+      while (curr_offset != 0 && index < entry_count){
+            myfs_file_t *entry_file = offset_to_ptr(fsptr, curr_offset);
+
+            //allocate space for name plus null term
+            
+      }
+
 }
 
 /* Implements an emulation of the mknod system call for regular files
