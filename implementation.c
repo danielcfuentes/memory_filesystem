@@ -930,8 +930,84 @@ int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_unlink_implem(void *fsptr, size_t fssize, int *errnoptr,
                         const char *path) {
-  /* STUB */
-  return -1;
+      //check params
+      if(!fsptr || !path || !errnoptr){
+            if (errnoptr){
+                  //error code for bad address
+                  *errnoptr = EFAULT;
+            }
+            return -1;
+      }
+
+      //initalized fs
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      //if failed
+      if (!header){
+            return -1;
+      }
+
+      //get the filename and parent dir
+      char *filename;
+      myfs_file_t *parent_dir = find_parent_dir(fsptr, path, &filename, errnoptr);
+      if (parent_dir == NULL){
+            return -1;
+      }
+
+      //search the dir for the file and ww going to use a 2 pointer way to traverse
+
+      //keep track of previous entry for LL
+      myfs_offset_t prev_offset = 0;
+      //first entry in dir
+      myfs_offset_t curr_offset = parent_dir -> data_block;
+      //pointer to curr file entry bieng checked
+      myfs_file_t* curr_file_ptr = NULL:
+
+      //loop thoriugh dir entries
+      while(curr_offset != 0){
+            curr_file_ptr = offset_to_ptr(fsptr, curr_offset);
+
+            //check if this is the file we want to unlink
+            if (strcmp(curr_file_ptr->name, filename) == 0){
+                  //make sure we are deleting a file not a dir
+                  if(curr_file_ptr->type != MYFS_TYPE_FILE){
+                        free(filename);
+                        //error if trying to delete a directory
+                        *errnoptr = EISDIR;
+                        return -1;
+                  }
+
+                  //remove from the dir list so update the dir links to keep this file
+                  //first entry in dir
+                  if(prev_offset == 0){
+                        parent_dir ->data_block = curr_file_ptr->next;
+                  }
+                  //the file is either in th emiddle or end of dir
+                  else{
+                        myfs_file_t* prev_file_ptr = offset_to_ptr(fsptr, prev_offset);
+                        prev_file_ptr->next = curr_file_ptr->next;
+                  }
+
+                  //if file was not empty feee its data blocks
+                  if(curr_file_ptr->data_block !=0){
+                        free_block(fsptr, curr_file_ptr->data_block);
+                  }
+                  //free file entry
+                  free_block(fsptr, curr_offset);
+
+                  //we good
+                  free(filename);
+                  return 0;
+            }
+
+            //update pointers
+            prev_offset = curr_offset;
+            curr_offset = curr_file_ptr->next;
+      }
+
+      //if the file was not found
+      free(filename);
+      *errnoptr = ENOENT;
+      return -1;
 }
 
 /* Implements an emulation of the rmdir system call on the filesystem 
