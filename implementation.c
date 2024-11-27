@@ -523,6 +523,121 @@ FUNCTIONS FOR PATHS
 
 */
 
+//function to split a path into its component parts
+//ex: "/home/user/file.txt" -> ["home", "user", "file.txt"]
+static char** split_path(const char* path, int* count) {
+    //make a copy of path since strtok modifies the string
+    char* path_copy = strdup(path);
+    char** components = NULL;
+    *count = 0;
+    
+    //special case: root directory "/"
+    if (strcmp(path, "/") == 0) {
+        free(path_copy);
+        return NULL;
+    }
+    
+    //use strtok to split path at '/' characters
+    char* token = strtok(path_copy, "/");
+    while (token != NULL) {
+        //reallocate array to hold one more component
+        components = realloc(components, (*count + 1) * sizeof(char*));
+        //make a copy of the component
+        components[*count] = strdup(token);
+        (*count)++;
+        //get next component
+        token = strtok(NULL, "/");
+    }
+    
+    //free temporary path copy
+    free(path_copy);
+    return components;
+}
+
+//function to free memory allocated by split_path
+static void free_path_components(char** components, int count) {
+    //free each component string
+    for (int i = 0; i < count; i++) {
+        free(components[i]);
+    }
+    //free the array of pointers
+    free(components);
+}
+
+//function to find an entry (file or directory) in a directory by name to locate files/directories
+static myfs_file_t* find_entry(void* fsptr, myfs_file_t* dir, const char* name) {
+    //check input parameters
+    if (!dir || !name) return NULL;
+    
+    //get offset to first entry in directory
+    myfs_offset_t curr_offset = dir->data_block;
+    
+    //traverse linked list of directory entries
+    while (curr_offset != 0) {
+        //convert offset to pointer
+        myfs_file_t* entry = offset_to_ptr(fsptr, curr_offset);
+        //check if name matches
+        if (strcmp(entry->name, name) == 0) {
+            return entry;
+        }
+        //move to next entry
+        curr_offset = entry->next;
+    }
+    return NULL;
+}
+
+//function to find the parent directory of a path and extract the target filename
+static myfs_file_t* find_parent_dir(void* fsptr, const char* path, char** filename, int* errno) {
+    //get filesystem header
+    myfs_header_t* header = (myfs_header_t*)fsptr;
+    
+    //get root directory entry
+    myfs_file_t* curr_dir = offset_to_ptr(fsptr, header->root_dir);
+    
+    //split path into components
+    int comp_count;
+    char** components = split_path(path, &comp_count);
+    
+    //cannot create anything in root directory directly
+    if (comp_count == 0) {
+        *errno = EEXIST;
+        return NULL;
+    }
+    
+    //save the last component (filename/dirname)
+    *filename = strdup(components[comp_count - 1]);
+    
+    //traverse path components except the last one
+    for (int i = 0; i < comp_count - 1; i++) {
+        //find next component in current directory
+        myfs_file_t* next = find_entry(fsptr, curr_dir, components[i]);
+        
+        //if component not found, path is invalid
+        if (!next) {
+            free_path_components(components, comp_count);
+            free(*filename);
+            *errno = ENOENT;
+            return NULL;
+        }
+        
+        //if component is not a directory, path is invalid
+        if (next->type != MYFS_TYPE_DIR) {
+            free_path_components(components, comp_count);
+            free(*filename);
+            *errno = ENOTDIR;
+            return NULL;
+        }
+        
+        //move to next directory
+        curr_dir = next;
+    }
+    
+    //free path components and return parent directory
+    free_path_components(components, comp_count);
+    return curr_dir;
+}
+
+
 /* End of helper functions */
 
 /* Implements an emulation of the stat system call on the filesystem 
@@ -680,7 +795,7 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
 
       //count num of entries in dir
       myfs_offset_t curr_offset = dir->data_block;
-      whule (curr_offset != 0){
+      while (curr_offset != 0){
             entry_count++;
             myfs_file_t *entry_file = offset_to_ptr(fsptr, curr_offset);
             curr_offset = entry_file->next;
