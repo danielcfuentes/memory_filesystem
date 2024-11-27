@@ -845,8 +845,75 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr,
                         const char *path) {
-  /* STUB */
-  return -1;
+      //check params
+      if(!fsptr || !path || !errnoptr){
+            if (errnoptr){
+                  //error code for bad address
+                  *errnoptr = EFAULT;
+            }
+            return -1;
+      }
+
+      //initalized fs
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      //if failed
+      if (!header){
+            return -1;
+      }
+
+      //get parent dir and filename
+      char *filename;
+      //when we call find_parent_dir we split the path given into componnents, traverses path until it gets the file and sets it to filename thenreturns poitner to the parent dir of that file
+      myfs_file_t *parent_dir = find_parent_dir(fsptr, path, &filename, errnoptr);
+      if (!parent_dir){
+            return -1;
+      }
+
+      //check if file already exists in parent dir
+      //search  the parent dir with the filename
+      if(find_entry(fsptr, parent_dir, filename)){
+            free(filename);
+            //error code for file already exists
+            *errnoptr = EEXIST;
+            return -1;
+      }
+
+      //check the file's name len
+      if(strlen(filename) > MYFS_MAX_FILENAME){
+            free(filename);
+            //error code for filename too long
+            *errnoptr = ENAMETOOLONG;
+            return -1;
+      }
+
+      //allocate space for new file struct
+      myfs_offset_t new_file_offset = allocate_block(fsptr, sizeof(myfs_file_t));
+      //if no space avaible the offset is zero and error
+      if (new_file_offset == 0){
+            free(filename);
+            //error code for no space left
+            *errnoptr = ENOSPC;
+            return -1;
+      }
+
+      //if it worked intilaized new file sturct
+      myfs_file_t *new_file_ptr = offset_to_ptr(fsptr, new_file_offset)
+      memset(new_file_ptr, 0, sizeof(myfs_file_t));
+      strcpy(new_file_ptr->name, filename);
+      new_file_ptr->type = MYFS_TYPE_FILE;
+      new_file_ptr->size = 0;
+      new_file_ptr->parent = ptr_to_offset(fsptr, parent_dir);
+      new_file_ptr->data_block = 0;
+
+      //add file to parent dir list. like inssertin to the head of a LL.
+      //new files next ptr points to curr first file
+      //parent dir now points to new file
+      new_file_ptr->next = parent_dir->data_block;
+      parent_dir->data_block = new_file_offset;
+
+      //free and return
+      free(filename);
+      return 0;
 }
 
 /* Implements an emulation of the unlink system call for regular files
