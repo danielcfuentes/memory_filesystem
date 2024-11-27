@@ -514,6 +514,59 @@ FUNCTIONS FOR PATHS
 
 */
 
+static myfs_file_t *find_file(myfs_header_t *myfs, const char *path) {
+
+      // Start from the root directory
+      myfs_file_t *current = offset_to_ptr(myfs, myfs->root_dir);
+
+      // Duplicate the path for tokenization
+      char *path_copy = strdup(path);
+      if (path_copy == NULL) {
+            return NULL; // Memory allocation failed
+      }
+
+      // Tokenize the path using '/' as the delimiter
+      char *token = strtok(path_copy, "/");
+
+      while (token != NULL && current != NULL) {
+            // Search for the current token in the current directory
+            myfs_offset_t child_offset = current->next; // Start with the first child
+            myfs_offset_t directory_offset = current->parent; // Store the parent directory to mantain ourselves in the same directory
+            current = NULL; // Reset current
+
+            while (child_offset != 0) {
+                  // Get the child file or directory
+                  myfs_file_t *child = offset_to_ptr(myfs, child_offset);
+
+                  // Break once we reach the next level directory
+                  if (child->parent != directory_offset) {
+                        break;
+                  }
+
+                  // Check if the names match
+                  if (strcmp(child->name, token) == 0) {
+                        current = child; // Move to the matched child
+                  }
+
+                  // Move to the next file in the list
+                  child_offset = child->next;
+            }
+
+            if (current == NULL) {
+                  // If no match was found, cleanup and return NULL
+                  free(path_copy);
+                  return NULL;
+            }
+
+            // Get the next token in the path
+            token = strtok(NULL, "/");
+      }
+
+    // Cleanup and return the found file or directory
+    free(path_copy);
+    return current;
+}
+
 /* End of helper functions */
 
 /* Implements an emulation of the stat system call on the filesystem 
