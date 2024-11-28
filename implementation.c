@@ -1149,8 +1149,75 @@ int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr,
                         const char *path) {
-  /* STUB */
-  return -1;
+      //check params
+      if(!fsptr || !path || !errnoptr){
+            if (errnoptr){
+                  //error code for bad address
+                  *errnoptr = EFAULT;
+            }
+            return -1;
+      }
+
+      //edgecase if the path is just the root dir, we fail bc it already exists
+      if(strcmp(path, "/") == 0){
+            *errnoptr = EEXIST;
+            return -1;
+      }
+
+      //initalized fs
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      //if failed
+      if (!header){
+            return -1;
+      }
+
+      //get the filename and parent dir
+      char *dirname;
+      myfs_file_t *parent_dir = find_parent_dir(fsptr, path, &dirname, errnoptr);
+      if (parent_dir == NULL){
+            return -1;
+      }
+
+      //check if dir already exists
+      if (find_entry(fsptr, parent_dir, dirname)){
+            free(dirname);
+            *errnoptr = EEXIST;
+            return -1;
+      }
+
+      //check dir name len
+      if(strlen(dirname) > MYFS_MAX_FILENAME){
+            free(dirname);
+            *errnoptr = ENAMETOOLONG;
+            return -1;
+      }
+
+      //allocate space for new dir
+      myfs_offset_t new_dir_offset = allocate_block(fsptr, sizeof(myfs_file_t));
+      if (new_dir_offset == 0){
+            free(dirname);
+            *errnoptr = ENOSPC;
+            return -1;
+      }
+
+      //intliazie new dir
+      myfs_file_t *newdir = offset_to_ptr(fsptr, new_dir_offset);
+      memset(newdir, 0, sizeof(myfs_file_t));
+
+      //set attrvitues
+      strcpy(newdir->name, dirname);
+      newdir->type = MYFS_TYPE_DIR;
+      newdir->size = 0;
+      newdir->parent = ptr_to_offset(fsptr, parent_dir);
+      newdir->data_block = 0;
+
+      //add dir to parent list
+      newdir->next = parent_dir->data_block;
+      parent_dir->data_block = new_dir_offset;
+
+      //we good
+      free(dirname);
+      return 0;
 }
 
 /* Implements an emulation of the rename system call on the filesystem 
