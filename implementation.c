@@ -801,8 +801,27 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_open_implem(void *fsptr, size_t fssize, int *errnoptr,
                        const char *path) {
-  /* STUB */
-  return -1;
+      //check if initialized
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      if(header == NULL){
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      //find the file/dir entry for given path
+      myfs_file_t *file = find_file(header, path);
+      if (file == NULL){
+            *errnoptr = ENOENT;
+            return -1;
+      }
+
+      // Ensure it is a regular file
+      if (file->type != MYFS_TYPE_FILE) {
+            *errnoptr = EBADF; // Path is not a file
+            return -1;
+      }
+
+      return 0;
 }
 
 /* Implements an emulation of the read system call on the filesystem 
