@@ -859,7 +859,7 @@ int __myfs_read_implem(void *fsptr, size_t fssize, int *errnoptr,
       }
       memcpy(buf, file_data + offset, size);
 
-      // Return the number of bytes written
+      // Return the number of bytes read
       return size;
 }
 
