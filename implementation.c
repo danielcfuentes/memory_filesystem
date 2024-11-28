@@ -769,8 +769,69 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
                            const char *path, off_t offset) {
-  /* STUB */
-  return -1;
+      //check if initialized
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      if(header == NULL){
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      //find the file/dir entry for given path
+      myfs_file_t *file = find_file(header, path);
+      if (file == NULL){
+            *errnoptr = ENOENT;
+            return -1;
+      }
+
+      // Ensure it is a regular file
+      if (file->type != MYFS_TYPE_FILE) {
+            *errnoptr = EBADF; // Path is not a file
+            return -1;
+      }
+
+      // if there is no size change
+      if (file->size == (size_t)offset)
+            return 0;
+
+      // If the size will be shortened
+      if (file->size > (size_t)offset) {
+            // Update free space
+            myfs_offset_t data_block_offset = file->data_block + offset;
+            free_block(fsptr, data_block_offset);
+
+      } // If the size will be expanded
+      else {
+           // Extend by adding zeros
+            size_t bytes_to_add = offset - file->size;
+            char *file_data = offset_to_ptr(fsptr, file->data_block);
+
+            if (file_data == NULL) {
+                  *errnoptr = EFAULT; // Filesystem corruption
+                  return -1;
+            }
+
+            // Find the new space for the data block
+            char *new_space = offset_to_ptr(fsptr, allocate_block(fsptr, offset));
+
+            // Copy the memory from old space to new space
+            memcpy(new_space, file_data, file->size);
+
+            // Free old memory space
+            free_block(fsptr, ptr_to_offset(fsptr, file_data));
+
+            // Set the new memory space
+            file_data = ptr_to_offset(fsptr, new_space);
+            file->data_block = file_data;
+
+            // Append zeros in the remaining space
+            memset(file_data + file->size, 0, bytes_to_add);
+      }
+
+      // Update file size
+      file->size = offset;
+
+
+      return 0;
 }
 
 /* Implements an emulation of the open system call on the filesystem 
