@@ -317,6 +317,10 @@ struct myfs_file_struct{
       myfs_offset_t parent;
       //size of the file
       size_t size;
+      //last access time
+      struct timespec atime;
+      //last modification time
+      struct timespec mtime;
 };
 typedef struct myfs_file_struct myfs_file_t;
 
@@ -858,8 +862,26 @@ int __myfs_write_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_utimens_implem(void *fsptr, size_t fssize, int *errnoptr,
                           const char *path, const struct timespec ts[2]) {
-  /* STUB */
-  return -1;
+  
+      //check if initialized
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      if(header == NULL){
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      //find the file/dir entry for given path
+      myfs_file_t *file = find_file(header, path);
+      if (file == NULL){
+            *errnoptr = ENOENT;
+            return -1;
+      }
+
+      // Update access and modification times
+      file->atime = ts[0]; // Access time
+      file->mtime = ts[1]; // Modification time
+
+      return 0;
 }
 
 /* Implements an emulation of the statfs system call on the filesystem 
@@ -902,12 +924,6 @@ struct statvfs_struct {
 
 int __myfs_statfs_implem(void *fsptr, size_t fssize, int *errnoptr,
                          struct statvfs* stbuf) {
-  
-      // Validate inputs
-      if (fsptr == NULL || stbuf == NULL || fssize < sizeof(myfs_header_t)) {
-            *errnoptr = EINVAL; // Invalid argument
-            return -1;
-      }
 
       //check if initialized
       myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
