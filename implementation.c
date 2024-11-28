@@ -30,6 +30,7 @@
 
 #include <stddef.h>
 #include <sys/stat.h>
+#include <sys/vfs.h>
 #include <sys/statvfs.h>
 #include <stdint.h>
 #include <string.h>
@@ -884,8 +885,46 @@ int __myfs_utimens_implem(void *fsptr, size_t fssize, int *errnoptr,
              filesystem has such a maximum
 
 */
+
+/*
+In case the struct for statvfs needs to be defined
+typedef struct statvfs_struct statvfs;
+
+struct statvfs_struct {
+      __fsword_t f_bsize;   // Optimal transfer block size 
+      fsblkcnt_t f_blocks;  // Total data blocks in filesystem 
+      fsblkcnt_t f_bfree;   // Free blocks in filesystem 
+      fsblkcnt_t f_bavail;  // Free blocks available to
+                              unprivileged user 
+      __fsword_t f_namemax; // Maximum length of filenames 
+};
+*/
+
 int __myfs_statfs_implem(void *fsptr, size_t fssize, int *errnoptr,
                          struct statvfs* stbuf) {
-  /* STUB */
-  return -1;
+  
+      // Validate inputs
+      if (fsptr == NULL || stbuf == NULL || fssize < sizeof(myfs_header_t)) {
+            *errnoptr = EINVAL; // Invalid argument
+            return -1;
+      }
+
+      //check if initialized
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      if(header == NULL){
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      // Populate the statvfs structure
+      memset(stbuf, 0, sizeof(struct statvfs)); // Zero out the structure first
+
+      stbuf->f_bsize = header->block_size;      // Block size
+      stbuf->f_blocks = header->total_blocks;   // Total blocks in the filesystem
+      stbuf->f_bfree = header->free_blocks;     // Free blocks in the filesystem
+      stbuf->f_bavail = header->free_blocks;    // Blocks available to unprivileged users
+      stbuf->f_namemax = MYFS_MAX_FILENAME;     // Maximum file name length
+
+      // Success
+      return 0;
 }
