@@ -953,6 +953,9 @@ int __myfs_unlink_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
+      //get parent dir offset
+      myfs_offset_t parent_offset = ptr_to_offset(fsptr, parent_dir);
+
       //search the dir for the file and ww going to use a 2 pointer way to traverse
 
       //keep track of previous entry for LL
@@ -976,6 +979,12 @@ int __myfs_unlink_implem(void *fsptr, size_t fssize, int *errnoptr,
                         return -1;
                   }
 
+                  if(curr_file_ptr->parent != parent_offset){
+                        free(filename);
+                        *errnoptr = EFAULT;
+                        retuen -1;
+                  }
+
                   //remove from the dir list so update the dir links to keep this file
                   //first entry in dir
                   if(prev_offset == 0){
@@ -992,6 +1001,7 @@ int __myfs_unlink_implem(void *fsptr, size_t fssize, int *errnoptr,
                         free_block(fsptr, curr_file_ptr->data_block);
                   }
                   //free file entry
+                  curr_file_ptr->parent = 0;
                   free_block(fsptr, curr_offset);
 
                   //we good
@@ -1027,8 +1037,102 @@ int __myfs_unlink_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr,
                         const char *path) {
-  /* STUB */
-  return -1;
+      //check params
+      if(!fsptr || !path || !errnoptr){
+            if (errnoptr){
+                  //error code for bad address
+                  *errnoptr = EFAULT;
+            }
+            return -1;
+      }
+
+      //edgecase if the path is just the root dir, we fail since we cant remove root dir
+      if(strcmp(path, "/") == 0){
+            //error code sicne the root is always in use
+            *errnoptr = EBUSY;
+            return -1;
+      }
+
+      //initalized fs
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      //if failed
+      if (!header){
+            return -1;
+      }
+
+      //get the filename and parent dir
+      char *dirname;
+      myfs_file_t *parent_dir = find_parent_dir(fsptr, path, &dirname, errnoptr);
+      if (parent_dir == NULL){
+            return -1;
+      }
+
+      //parent dir offset
+      myfs_offset_t parent_offset = ptr_to_offset(fsptr, parent_dir)
+
+      //keep track of previous entry for LL
+      myfs_offset_t prev_offset = 0;
+      //first entry in dir
+      myfs_offset_t curr_offset = parent_dir -> data_block;
+      //pointer to curr dir entry bieng checked
+      myfs_file_t* curr_dir_ptr = NULL:
+
+      //loop thoriugh dir entries
+      while(curr_offset != 0){
+            curr_dir_ptr = offset_to_ptr(fsptr, curr_offset);
+
+            //check if this is the file we want to unlink
+            if (strcmp(curr_dir_ptr->name, dirname) == 0){
+                  //make sure we are deleting a dir not a fi;e
+                  if(curr_dir_ptr->type != MYFS_TYPE_DIR){
+                        free(dirname);
+                        //error if trying to delete a file instead
+                        *errnoptr = EISDIR;
+                        return -1;
+                  }
+
+                  //check parent relationshop
+                  if(curr_dir_ptr->parent != parent_offset){
+                        free(dirname);
+                        *errnoptr = EFAULT;
+                        return -1;
+                  }
+
+                  //check if dir is empty if is not then cannot delete
+                  if(curr_dir_ptr->data_block !=0){
+                        free(dirname);
+                        *errnoptr = ENOTEMPTY;
+                        return -1;
+                  }
+
+                  //remove from the dir list so update the dir links to keep this file
+                  //first entry in dir
+                  if(prev_offset == 0){
+                        parent_dir ->data_block = curr_dir_ptr->next;
+                  }
+                  //the file is either in th emiddle or end of dir
+                  else{
+                        myfs_file_t* prev_dir_ptr = offset_to_ptr(fsptr, prev_offset);
+                        prev_dir_ptr->next = curr_dir_ptr->next;
+                  }
+
+                  //free dir
+                  free_block(fsptr, curr_offset);
+
+                  //we good
+                  free(dirname);
+                  return 0;
+            }
+
+            //update pointers
+            prev_offset = curr_offset;
+            curr_offset = curr_dir_ptr->next;
+      }
+
+      //if the file was not found
+      free(dirname);
+      *errnoptr = ENOENT;
+      return -1;
 }
 
 /* Implements an emulation of the mkdir system call on the filesystem 
