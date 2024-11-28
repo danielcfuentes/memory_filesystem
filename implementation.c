@@ -843,8 +843,59 @@ int __myfs_read_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_write_implem(void *fsptr, size_t fssize, int *errnoptr,
                         const char *path, const char *buf, size_t size, off_t offset) {
-  /* STUB */
-  return -1;
+      
+      //check if initialized
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      if(header == NULL){
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      //find the file/dir entry for given path
+      myfs_file_t *file = find_file(header, path);
+      if (file == NULL){
+            *errnoptr = EBADF;
+            return -1;
+      }
+
+      // Ensure it is a regular file
+      if (file->type != MYFS_TYPE_FILE) {
+            *errnoptr = EBADF; // Path is not a file
+            return -1;
+      }
+
+      // Check if offset is valid
+      if (offset < 0 || (size_t)offset > file->size) {
+            *errnoptr = EINVAL; // Invalid offset
+            return -1;
+      }
+
+      // Calculate required size to accommodate the write
+      size_t required_size = offset + size;
+
+      // Allocate more blocks if necessary
+      if (required_size > file->size) {
+            size_t additional_size = required_size - file->size;
+            myfs_offset_t new_block = allocate_block(fsptr, additional_size);
+            if (new_block == 0) {
+                  *errnoptr = ENOSPC; // No space left on device
+                  return -1;
+            }
+
+            file->size = required_size;
+            file->data_block = new_block; // Link the new block to the file
+      }
+
+      // Perform the write
+      char *file_data = offset_to_ptr(fsptr, file->data_block);
+      if (file_data == NULL) {
+            *errnoptr = EFAULT; // Filesystem corruption
+            return -1;
+      }
+      memcpy(file_data + offset, buf, size);
+
+      // Return the number of bytes written
+      return size;
 }
 
 /* Implements an emulation of the utimensat system call on the filesystem 
