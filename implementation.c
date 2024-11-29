@@ -1272,8 +1272,155 @@ int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
                          const char *from, const char *to) {
-  /* STUB */
-  return -1;
+      
+      //check params
+      if (!fsptr || !from || !to || !errnoptr) {
+            if (errnoptr){
+                  *errnoptr = EFAULT;
+            }
+            return -1;
+      }
+
+      //if paths trying to change are th e same we do nothing
+      if(strcmp(from, to) == 0){
+            return 0;
+      }
+      
+      //check if intialized and get header
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      if (!header) {
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      //get root directory as need it for path traversal
+      myfs_file_t *root_dir = offset_to_ptr(fsptr, header->root_dir);
+      if (!root_dir) {
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      //find the aprent dir of the from path and gets the filename
+      char *from_name;
+      myfs_file_t *from_parent = find_parent_dir(fsptr, from, &from_name, errnoptr);
+      if(from_parent == NULL){
+            return -1;
+      }
+
+      //find souce entry its parent dir
+      //keeps track of previous entry
+      myfs_offset_t prev_offset = 0;
+      //current entry bieng checked
+      myfs_offset_t curr_offset = from_parent->data_block;
+      //store pointer to from entry when found
+      myfs_file_t * from_entry = NULL;
+
+      //loop through entreies in parent dir
+      while(curr_offset != 0){
+            //convert offsent to pointer for curr entry
+            myfs_file_t *curr_ptr = offset_to_ptr(fsptr, curr_offset);
+            
+            //if curr entrys name mathces what we looking for
+            if(strcmp(curr_ptr->name, from_name) == 0){
+                  //store pointer to found entry
+                  from_entry = curr_ptr;
+                  break;
+            }
+            //move to next entry
+            prev_offset = curr_offset;
+            curr_offset = curr_ptr->next;
+      }
+
+      //if the source was not found return error
+      if(from_entry == NULL){
+            free(from_name);
+            *errnoptr = ENOENT;
+            return -1;
+      }
+
+      //find parent dir of TO path and get filename
+      char *to_name;
+      myfs_file_t *to_parent = find_parent_dir(fsptr, to, &to_name, errnoptr);
+      if (!to_parent) {
+            free(from_name);
+            return -1;
+      }
+
+      //check if it already exits at the to path
+      myfs_file_t *existing_to = find_entry(fsptr, to_parent, to_name);
+      
+      //if destination exists, handle according to type
+      if (existing_to) {
+            //cannot overwrite a directory with a non-directory
+            if (existing_to->type == MYFS_TYPE_DIR && from_entry->type != MYFS_TYPE_DIR) {
+                  free(from_name);
+                  free(to_name);
+                  *errnoptr = EISDIR;
+                  return -1;
+            }
+            
+            //cannot overwrite a non-directory with a directory
+            if (existing_to->type != MYFS_TYPE_DIR && from_entry->type == MYFS_TYPE_DIR) {
+                  free(from_name);
+                  free(to_name);
+                  *errnoptr = ENOTDIR;
+                  return -1;
+            }
+
+            //if destination is a directory, it must be empty
+            if (existing_to->type == MYFS_TYPE_DIR && existing_to->data_block != 0) {
+                  free(from_name);
+                  free(to_name);
+                  *errnoptr = ENOTEMPTY;
+                  return -1;
+            }
+
+            //remove existing destination entry from parent dir
+            myfs_offset_t existing_prev = 0;
+            myfs_offset_t existing_curr = to_parent->data_block;
+
+            //loopp through dir entries
+            while (existing_curr != 0) {
+                  myfs_file_t *curr = offset_to_ptr(fsptr, existing_curr);
+
+                  //found
+                  if (strcmp(curr->name, to_name) == 0) {
+                        if (existing_prev == 0) {
+                              to_parent->data_block = curr->next;
+                        } else {
+                              myfs_file_t *prev = offset_to_ptr(fsptr, existing_prev);
+                              prev->next = curr->next;
+                        }
+                        break;
+                  }
+                  //move to next entry
+                  existing_prev = existing_curr;
+                  existing_curr = curr->next;
+            }
+      }
+      
+      //remove entry from source directory
+      if (prev_offset == 0) {
+            from_parent->data_block = from_entry->next;
+      } else {
+            myfs_file_t *prev = offset_to_ptr(fsptr, prev_offset);
+            prev->next = from_entry->next;
+      }
+
+      //copy new name into entry
+      strncpy(from_entry->name, to_name, MYFS_MAX_FILENAME);
+      //update parent pointer ro new parent dir
+      from_entry->parent = ptr_to_offset(fsptr, to_parent);
+      
+      //make entrys next pointer point to curr first entry
+      from_entry->next = to_parent->data_block;
+      //make sur point to our entry as new first entry
+      to_parent->data_block = ptr_to_offset(fsptr, from_entry);
+
+      //free and return
+      free(from_name);
+      free(to_name);
+      return 0;
 }
 
 /* Implements an emulation of the truncate system call on the filesystem 
