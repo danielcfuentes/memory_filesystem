@@ -1723,7 +1723,7 @@ int __myfs_write_implem(void *fsptr, size_t fssize, int *errnoptr,
 
       // Ensure it is a regular file
       if (file->type != MYFS_TYPE_FILE) {
-            *errnoptr = EBADF; // Path is not a file
+            *errnoptr = EISDIR; // Path is not a file
             return -1;
       }
 
@@ -1734,28 +1734,61 @@ int __myfs_write_implem(void *fsptr, size_t fssize, int *errnoptr,
       }
 
       // Calculate required size to accommodate the write
-      size_t required_size = offset + size;
+      size_t required_size = (size_t)offset + size;
 
       // Allocate more blocks if necessary
       if (required_size > file->size) {
-            size_t additional_size = required_size - file->size;
+            //round up to nearest blick
+            size_t additional_size = ((required_size + MYFS_BLOCK_SIZE - 1) / MYFS_BLOCK_SIZE) * MYFS_BLOCK_SIZE;
+
+            //allocated new vblock
             myfs_offset_t new_block = allocate_block(fsptr, additional_size);
             if (new_block == 0) {
                   *errnoptr = ENOSPC; // No space left on device
                   return -1;
             }
 
-            file->size = required_size;
+            char *new_data = offset_to_ptr(fsptr, new_block);
+            if (new_data == NULL){
+                  *errnoptr = EFAULT;
+                  return -1;
+            }
+
+            //inatalized new space with zeros
+            memset(new_data, 0, additional_size);
+
+            //if there was existing data we need to copy it over
+            if (file->data_block != 0){
+                  char *old_data = offset_to_ptr(fsptr, file->data_block);
+                  if(old_data != NULL){
+                        memcpy(new_data, old_data, file->size);
+                        free_block(fsptr, file->data_block);
+                  }
+            }
+
             file->data_block = new_block; // Link the new block to the file
       }
 
-      // Perform the write
+      // get pointer to file data
       char *file_data = offset_to_ptr(fsptr, file->data_block);
       if (file_data == NULL) {
             *errnoptr = EFAULT; // Filesystem corruption
             return -1;
       }
+
+      //preform write
       memcpy(file_data + offset, buf, size);
+
+      //update file size if needed
+      if (required_size > file->size){
+            file->size = required_size;
+      }
+
+      //update modification and access times
+      struct timespec current_time;
+      clock_gettime(CLOCK_REALTIME, &current_time);
+      file->last_modified_time = current_time;
+      file->last_access_time = current_time;
 
       // Return the number of bytes written
       return size;
