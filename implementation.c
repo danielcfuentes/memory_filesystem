@@ -637,6 +637,60 @@ static myfs_file_t* find_parent_dir(void* fsptr, const char* path, char** filena
     return curr_dir;
 }
 
+static myfs_file_t *find_file(myfs_header_t *myfs, const char *path) {
+
+      // Start from the root directory
+      myfs_file_t *current = offset_to_ptr(myfs, myfs->root_dir);
+
+      // Duplicate the path for tokenization
+      char *path_copy = strdup(path);
+      if (path_copy == NULL) {
+            return NULL; // Memory allocation failed
+      }
+
+      // Tokenize the path using '/' as the delimiter
+      char *token = strtok(path_copy, "/");
+
+      while (token != NULL && current != NULL) {
+            // Search for the current token in the current directory
+            myfs_offset_t child_offset = current->next; // Start with the first child
+            myfs_offset_t directory_offset = current->parent; // Store the parent directory to mantain ourselves in the same directory
+            current = NULL; // Reset current
+
+            while (child_offset != 0) {
+                  // Get the child file or directory
+                  myfs_file_t *child = offset_to_ptr(myfs, child_offset);
+
+                  // Break once we reach the next level directory
+                  if (child->parent != directory_offset) {
+                        break;
+                  }
+
+                  // Check if the names match
+                  if (strcmp(child->name, token) == 0) {
+                        current = child; // Move to the matched child
+                  }
+
+                  // Move to the next file in the list
+                  child_offset = child->next;
+            }
+
+            if (current == NULL) {
+                  // If no match was found, cleanup and return NULL
+                  free(path_copy);
+                  return NULL;
+            }
+
+            // Get the next token in the path
+            token = strtok(NULL, "/");
+      }
+
+    // Cleanup and return the found file or directory
+      free(path_copy);
+      return current;
+}
+
+
 
 /* End of helper functions */
 
@@ -1441,8 +1495,69 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
                            const char *path, off_t offset) {
-  /* STUB */
-  return -1;
+      //check if initialized
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      if(header == NULL){
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      //find the file/dir entry for given path
+      myfs_file_t *file = find_file(header, path);
+      if (file == NULL){
+            *errnoptr = ENOENT;
+            return -1;
+      }
+
+      // Ensure it is a regular file
+      if (file->type != MYFS_TYPE_FILE) {
+            *errnoptr = EBADF; // Path is not a file
+            return -1;
+      }
+
+      // if there is no size change
+      if (file->size == (size_t)offset)
+            return 0;
+
+      // If the size will be shortened
+      if (file->size > (size_t)offset) {
+            // Update free space
+            myfs_offset_t data_block_offset = file->data_block + offset;
+            free_block(fsptr, data_block_offset);
+
+      } // If the size will be expanded
+      else {
+           // Extend by adding zeros
+            size_t bytes_to_add = offset - file->size;
+            char *file_data = offset_to_ptr(fsptr, file->data_block);
+
+            if (file_data == NULL) {
+                  *errnoptr = EFAULT; // Filesystem corruption
+                  return -1;
+            }
+
+            // Find the new space for the data block
+            char *new_space = offset_to_ptr(fsptr, allocate_block(fsptr, offset));
+
+            // Copy the memory from old space to new space
+            memcpy(new_space, file_data, file->size);
+
+            // Free old memory space
+            free_block(fsptr, ptr_to_offset(fsptr, file_data));
+
+            // Set the new memory space
+            file_data = ptr_to_offset(fsptr, new_space);
+            file->data_block = file_data;
+
+            // Append zeros in the remaining space
+            memset(file_data + file->size, 0, bytes_to_add);
+      }
+
+      // Update file size
+      file->size = offset;
+
+
+      return 0;
 }
 
 /* Implements an emulation of the open system call on the filesystem 
@@ -1473,8 +1588,27 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_open_implem(void *fsptr, size_t fssize, int *errnoptr,
                        const char *path) {
-  /* STUB */
-  return -1;
+      //check if initialized
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      if(header == NULL){
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      //find the file/dir entry for given path
+      myfs_file_t *file = find_file(header, path);
+      if (file == NULL){
+            *errnoptr = ENOENT;
+            return -1;
+      }
+
+      // Ensure it is a regular file
+      if (file->type != MYFS_TYPE_FILE) {
+            *errnoptr = EBADF; // Path is not a file
+            return -1;
+      }
+
+      return 0;
 }
 
 /* Implements an emulation of the read system call on the filesystem 
@@ -1494,8 +1628,45 @@ int __myfs_open_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_read_implem(void *fsptr, size_t fssize, int *errnoptr,
                        const char *path, char *buf, size_t size, off_t offset) {
-  /* STUB */
-  return -1;
+      //check if initialized
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      if(header == NULL){
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      //find the file/dir entry for given path
+      myfs_file_t *file = find_file(header, path);
+      if (file == NULL){
+            *errnoptr = EBADF;
+            return -1;
+      }
+
+      // Ensure it is a regular file
+      if (file->type != MYFS_TYPE_FILE) {
+            *errnoptr = EBADF; // Path is not a file
+            return -1;
+      }
+
+      // Check if offset is valid
+      if (offset < 0 || (size_t)offset > file->size) {
+            *errnoptr = EINVAL; // Invalid offset
+            return -1;
+      }
+
+      // Initialize buf with zeroes
+      memset(buf, 0, size);
+
+      // Perform the read
+      char *file_data = offset_to_ptr(fsptr, file->data_block);
+      if (file_data == NULL) {
+            *errnoptr = EFAULT; // Filesystem corruption
+            return -1;
+      }
+      memcpy(buf, file_data + offset, size);
+
+      // Return the number of bytes read
+      return size;
 }
 
 /* Implements an emulation of the write system call on the filesystem 
@@ -1515,8 +1686,59 @@ int __myfs_read_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_write_implem(void *fsptr, size_t fssize, int *errnoptr,
                         const char *path, const char *buf, size_t size, off_t offset) {
-  /* STUB */
-  return -1;
+      
+      //check if initialized
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      if(header == NULL){
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      //find the file/dir entry for given path
+      myfs_file_t *file = find_file(header, path);
+      if (file == NULL){
+            *errnoptr = EBADF;
+            return -1;
+      }
+
+      // Ensure it is a regular file
+      if (file->type != MYFS_TYPE_FILE) {
+            *errnoptr = EBADF; // Path is not a file
+            return -1;
+      }
+
+      // Check if offset is valid
+      if (offset < 0 || (size_t)offset > file->size) {
+            *errnoptr = EINVAL; // Invalid offset
+            return -1;
+      }
+
+      // Calculate required size to accommodate the write
+      size_t required_size = offset + size;
+
+      // Allocate more blocks if necessary
+      if (required_size > file->size) {
+            size_t additional_size = required_size - file->size;
+            myfs_offset_t new_block = allocate_block(fsptr, additional_size);
+            if (new_block == 0) {
+                  *errnoptr = ENOSPC; // No space left on device
+                  return -1;
+            }
+
+            file->size = required_size;
+            file->data_block = new_block; // Link the new block to the file
+      }
+
+      // Perform the write
+      char *file_data = offset_to_ptr(fsptr, file->data_block);
+      if (file_data == NULL) {
+            *errnoptr = EFAULT; // Filesystem corruption
+            return -1;
+      }
+      memcpy(file_data + offset, buf, size);
+
+      // Return the number of bytes written
+      return size;
 }
 
 /* Implements an emulation of the utimensat system call on the filesystem 
@@ -1534,8 +1756,26 @@ int __myfs_write_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_utimens_implem(void *fsptr, size_t fssize, int *errnoptr,
                           const char *path, const struct timespec ts[2]) {
-  /* STUB */
-  return -1;
+  
+      //check if initialized
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      if(header == NULL){
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      //find the file/dir entry for given path
+      myfs_file_t *file = find_file(header, path);
+      if (file == NULL){
+            *errnoptr = ENOENT;
+            return -1;
+      }
+
+      // Update access and modification times
+      file->last_access_time = ts[0]; // Access time
+      file->last_modified_time = ts[1]; // Modification time
+
+      return 0;
 }
 
 /* Implements an emulation of the statfs system call on the filesystem 
@@ -1561,8 +1801,40 @@ int __myfs_utimens_implem(void *fsptr, size_t fssize, int *errnoptr,
              filesystem has such a maximum
 
 */
+
+/*
+In case the struct for statvfs needs to be defined
+typedef struct statvfs_struct statvfs;
+
+struct statvfs_struct {
+      __fsword_t f_bsize;   // Optimal transfer block size 
+      fsblkcnt_t f_blocks;  // Total data blocks in filesystem 
+      fsblkcnt_t f_bfree;   // Free blocks in filesystem 
+      fsblkcnt_t f_bavail;  // Free blocks available to
+                              unprivileged user 
+      __fsword_t f_namemax; // Maximum length of filenames 
+};
+*/
+
 int __myfs_statfs_implem(void *fsptr, size_t fssize, int *errnoptr,
                          struct statvfs* stbuf) {
-  /* STUB */
-  return -1;
+
+      //check if initialized
+      myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
+      if(header == NULL){
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      // Populate the statvfs structure
+      memset(stbuf, 0, sizeof(struct statvfs)); // Zero out the structure first
+
+      stbuf->f_bsize = header->block_size;      // Block size
+      stbuf->f_blocks = header->total_blocks;   // Total blocks in the filesystem
+      stbuf->f_bfree = header->free_blocks;     // Free blocks in the filesystem
+      stbuf->f_bavail = header->free_blocks;    // Blocks available to unprivileged users
+      stbuf->f_namemax = MYFS_MAX_FILENAME;     // Maximum file name length
+
+      // Success
+      return 0;
 }
