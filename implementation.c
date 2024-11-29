@@ -331,7 +331,7 @@ FUNCTIONS FOR CONVERTING POINTERS TO OFFSETS AND OFFSETS TO POINTERS
 */
 
 //convert offset to pointer
-static inline void offset_to_ptr(void *fsptr, myfs_offset_t offset) {
+static inline void* offset_to_ptr(void *fsptr, myfs_offset_t offset) {
       if (offset == 0) {
             return NULL;
       }
@@ -523,47 +523,6 @@ FUNCTIONS FOR PATHS
 
 */
 
-//function to split a path into its component parts
-//ex: "/home/user/file.txt" -> ["home", "user", "file.txt"]
-static char** split_path(const char* path, int* count) {
-    //make a copy of path since strtok modifies the string
-    char* path_copy = strdup(path);
-    char** components = NULL;
-    *count = 0;
-    
-    //special case: root directory "/"
-    if (strcmp(path, "/") == 0) {
-        free(path_copy);
-        return NULL;
-    }
-    
-    //use strtok to split path at '/' characters
-    char* token = strtok(path_copy, "/");
-    while (token != NULL) {
-        //reallocate array to hold one more component
-        components = realloc(components, (*count + 1) * sizeof(char*));
-        //make a copy of the component
-        components[*count] = strdup(token);
-        (*count)++;
-        //get next component
-        token = strtok(NULL, "/");
-    }
-    
-    //free temporary path copy
-    free(path_copy);
-    return components;
-}
-
-//function to free memory allocated by split_path
-static void free_path_components(char** components, int count) {
-    //free each component string
-    for (int i = 0; i < count; i++) {
-        free(components[i]);
-    }
-    //free the array of pointers
-    free(components);
-}
-
 //function to find an entry (file or directory) in a directory by name to locate files/directories
 static myfs_file_t* find_entry(void* fsptr, myfs_file_t* dir, const char* name) {
     //check input parameters
@@ -584,57 +543,6 @@ static myfs_file_t* find_entry(void* fsptr, myfs_file_t* dir, const char* name) 
         curr_offset = entry->next;
     }
     return NULL;
-}
-
-//function to find the parent directory of a path and extract the target filename
-static myfs_file_t* find_parent_dir(void* fsptr, const char* path, char** filename, int* errno) {
-    //get filesystem header
-    myfs_header_t* header = (myfs_header_t*)fsptr;
-    
-    //get root directory entry
-    myfs_file_t* curr_dir = offset_to_ptr(fsptr, header->root_dir);
-    
-    //split path into components
-    int comp_count;
-    char** components = split_path(path, &comp_count);
-    
-    //cannot create anything in root directory directly
-    if (comp_count == 0) {
-        *errno = EEXIST;
-        return NULL;
-    }
-    
-    //save the last component (filename/dirname)
-    *filename = strdup(components[comp_count - 1]);
-    
-    //traverse path components except the last one
-    for (int i = 0; i < comp_count - 1; i++) {
-        //find next component in current directory
-        myfs_file_t* next = find_entry(fsptr, curr_dir, components[i]);
-        
-        //if component not found, path is invalid
-        if (!next) {
-            free_path_components(components, comp_count);
-            free(*filename);
-            *errno = ENOENT;
-            return NULL;
-        }
-        
-        //if component is not a directory, path is invalid
-        if (next->type != MYFS_TYPE_DIR) {
-            free_path_components(components, comp_count);
-            free(*filename);
-            *errno = ENOTDIR;
-            return NULL;
-        }
-        
-        //move to next directory
-        curr_dir = next;
-    }
-    
-    //free path components and return parent directory
-    free_path_components(components, comp_count);
-    return curr_dir;
 }
 
 static myfs_file_t *find_file(myfs_header_t *myfs, const char *path) {
@@ -690,6 +598,75 @@ static myfs_file_t *find_file(myfs_header_t *myfs, const char *path) {
       return current;
 }
 
+static myfs_file_t* find_parent_dir(void* fsptr, const char* path, char** filename, int* errnoptr) {
+    // Check inputs
+    if (!fsptr || !path || !filename || !errnoptr) {
+        if (errnoptr) *errnoptr = EFAULT;
+        return NULL;
+    }
+
+    // Handle root directory case
+    if (strcmp(path, "/") == 0) {
+        *errnoptr = EEXIST;
+        return NULL;
+    }
+
+    // Make a copy of the path for manipulation
+    char* path_copy = strdup(path);
+    if (!path_copy) {
+        *errnoptr = ENOMEM;
+        return NULL;
+    }
+
+    // Find the last slash in the path
+    char* last_slash = strrchr(path_copy, '/');
+    if (!last_slash) {
+        free(path_copy);
+        *errnoptr = EINVAL;
+        return NULL;
+    }
+
+    // Extract the filename/dirname
+    *filename = strdup(last_slash + 1);
+    if (!*filename) {
+        free(path_copy);
+        *errnoptr = ENOMEM;
+        return NULL;
+    }
+
+    // If path is just "/filename", parent is root
+    if (last_slash == path_copy) {
+        free(path_copy);
+        myfs_header_t* header = (myfs_header_t*)fsptr;
+        return offset_to_ptr(fsptr, header->root_dir);
+    }
+
+    // Null terminate at last slash to get parent path
+    *last_slash = '\0';
+
+    // Use find_file to get the parent directory
+    myfs_header_t* header = (myfs_header_t*)fsptr;
+    myfs_file_t* parent = find_file(header, path_copy);
+    
+    free(path_copy);
+
+    // Check if parent exists and is a directory
+    if (!parent) {
+        free(*filename);
+        *filename = NULL;
+        *errnoptr = ENOENT;
+        return NULL;
+    }
+
+    if (parent->type != MYFS_TYPE_DIR) {
+        free(*filename);
+        *filename = NULL;
+        *errnoptr = ENOTDIR;
+        return NULL;
+    }
+
+    return parent;
+}
 
 
 /* End of helper functions */
@@ -886,7 +863,7 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
 
       //fill arr wuth the names of the files
       curr_offset = dir->data_block;
-      int i = 0
+      int i = 0;
       while (curr_offset != 0 && index < entry_count){
             myfs_file_t *entry_file = offset_to_ptr(fsptr, curr_offset);
 
@@ -951,7 +928,6 @@ int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr,
 
       //get parent dir and filename
       char *filename;
-      //when we call find_parent_dir we split the path given into componnents, traverses path until it gets the file and sets it to filename thenreturns poitner to the parent dir of that file
       myfs_file_t *parent_dir = find_parent_dir(fsptr, path, &filename, errnoptr);
       if (!parent_dir){
             return -1;
@@ -987,17 +963,29 @@ int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr,
       //if it worked intilaized new file sturct
       myfs_file_t *new_file_ptr = offset_to_ptr(fsptr, new_file_offset)
       memset(new_file_ptr, 0, sizeof(myfs_file_t));
-      strcpy(new_file_ptr->name, filename);
+
+
+      strncpy(new_file_ptr->name, filename, MYFS_MAX_FILENAME);
       new_file_ptr->type = MYFS_TYPE_FILE;
       new_file_ptr->size = 0;
       new_file_ptr->parent = ptr_to_offset(fsptr, parent_dir);
       new_file_ptr->data_block = 0;
+
+      //set current time for both access and modification times
+      struct timespec current_time;
+      clock_gettime(CLOCK_REALTIME, &current_time);
+      new_file->last_access_time = current_time;
+      new_file->last_modified_time = current_time;
 
       //add file to parent dir list. like inssertin to the head of a LL.
       //new files next ptr points to curr first file
       //parent dir now points to new file
       new_file_ptr->next = parent_dir->data_block;
       parent_dir->data_block = new_file_offset;
+
+      //update parent dir modified time
+      parent_dir->last_modified_time = current_time;
+      parent_dir->last_access_time = current_time;
 
       //free and return
       free(filename);
@@ -1070,7 +1058,7 @@ int __myfs_unlink_implem(void *fsptr, size_t fssize, int *errnoptr,
                   if(curr_file_ptr->parent != parent_offset){
                         free(filename);
                         *errnoptr = EFAULT;
-                        retuen -1;
+                        return -1;
                   }
 
                   //remove from the dir list so update the dir links to keep this file
@@ -1664,7 +1652,7 @@ int __myfs_read_implem(void *fsptr, size_t fssize, int *errnoptr,
       //get how many buytes we can acutllau read
       size_t bytes_to_read = size;
       if((size_t)offset + size > file->size){
-            bytes_to_read = file-.size - offset;
+            bytes_to_read = file->size - offset;
       }
       //if theres nothing to read
       if (bytes_to_read == 0){
