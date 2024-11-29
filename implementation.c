@@ -1644,18 +1644,33 @@ int __myfs_read_implem(void *fsptr, size_t fssize, int *errnoptr,
 
       // Ensure it is a regular file
       if (file->type != MYFS_TYPE_FILE) {
-            *errnoptr = EBADF; // Path is not a file
+            // *errnoptr = EBADF; // Path is not a file
+            //CHANGE:
+            *errnoptr = EISDIR;
             return -1;
       }
 
       // Check if offset is valid
-      if (offset < 0 || (size_t)offset > file->size) {
-            *errnoptr = EINVAL; // Invalid offset
+      if(offset < 0){
+            *errnoptr = EINVAL;
             return -1;
       }
 
-      // Initialize buf with zeroes
-      memset(buf, 0, size);
+      //if ofsset is beyone file size the EOF
+      if ((size_t)offset > file->size){
+            return 0;
+      }
+
+      //get how many buytes we can acutllau read
+      size_t bytes_to_read = size;
+      if((size_t)offset + size > file->size){
+            bytes_to_read = file-.size - offset;
+      }
+      //if theres nothing to read
+      if (bytes_to_read == 0){
+            return 0;
+      }
+
 
       // Perform the read
       char *file_data = offset_to_ptr(fsptr, file->data_block);
@@ -1663,10 +1678,15 @@ int __myfs_read_implem(void *fsptr, size_t fssize, int *errnoptr,
             *errnoptr = EFAULT; // Filesystem corruption
             return -1;
       }
-      memcpy(buf, file_data + offset, size);
+      memcpy(buf, file_data + offset, bytes_to_read);
+
+      //update access time
+      struct timespec curr_time;
+      clock_gettime(CLOCK_REALTIME, &curr_time);
+      file->last_access_time = curr_time;
 
       // Return the number of bytes read
-      return size;
+      return bytes_to_read;
 }
 
 /* Implements an emulation of the write system call on the filesystem 
