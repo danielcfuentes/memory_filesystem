@@ -676,9 +676,17 @@ int __myfs_getattr_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
+      //get rpot dir to use it to find other entries
+      myfs_file_t *root_dir = offset_to_ptr(fsptr, header->root_dir);
+      if(root_dir == NULL){
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
       //find the file/dir entru for given path
-      myfs_file_t *entry = 
+      myfs_file_t *entry = find_entry(fsptr, root_dir, path);
       if (entry == NULL){
+            *errnoptr = ENOENT;
             return -1;
       }
 
@@ -781,10 +789,18 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
-      //find the dir
-      myfs_file_struct *dir = 
+      //get rpot dir to use it to find other entries
+      myfs_file_t *root_dir = offset_to_ptr(fsptr, header->root_dir);
+      if(root_dir == NULL){
+            *errnoptr = EFAULT;
+            return -1;
+      }
+
+      //find the file/dir entru for given path
+      myfs_file_t *dir = find_entry(fsptr, root_dir, path);
       if (dir == NULL){
-            return -1
+            *errnoptr = ENOENT;
+            return -1;
       }
 
       //make sure uts a type fo dir
@@ -821,9 +837,27 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
             myfs_file_t *entry_file = offset_to_ptr(fsptr, curr_offset);
 
             //allocate space for name plus null term
-            
+            size_t name_len = strlen(entry_file->name);
+            (*namesptr)[i] = calloc(name_len + 1, sizeof(char));
+            if ((*namesptr)[i] == NULL) {
+                  //cleanup already allocated memory
+                  for (int j = 0; j < i; j++) {
+                        free((*namesptr)[j]);
+                  }
+                  free(*namesptr);
+                  *errnoptr = EINVAL;
+                  return -1;
+            }
+
+            //copy the name
+            strcpy((*namesptr)[i], entry_file->name);
+
+            //move to next entry
+            curr_offset = entry_file->next;
+            i++;
       }
 
+      return entry_count;
 }
 
 /* Implements an emulation of the mknod system call for regular files
