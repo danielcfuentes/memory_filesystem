@@ -1729,9 +1729,6 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
                   current_block = next_block;            // Move to next block
             }
 
-            myfs_block_header_t *null_terminator = offset_to_ptr(fsptr, file->data_block + offset - 1);
-            memcpy(null_terminator, '\0', 1);
-
       } // If the size will be expanded
       else {
            // Extend by adding zeros
@@ -1767,8 +1764,10 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
 
             // Append zeros in the remaining space
             memset(new_space + file->size, 0, bytes_to_add);
-            memcpy(new_space + (size_t)offset, '\0', 1);
       }
+
+      char * data = offset_to_ptr(fsptr, file->data_block);
+      data[offset - 1] = '\0';
 
       // Update file size
       file->size = offset;
