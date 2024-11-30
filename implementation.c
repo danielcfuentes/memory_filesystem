@@ -1766,7 +1766,7 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
 
             // Append zeros in the remaining space
             memset(new_space + file->size - 1, 0, bytes_to_add);
-            memset(new_space + offset, '\0', 1);
+            memset(new_space + (size_t)offset, '\0', 1);
       }
 
       // Update file size
