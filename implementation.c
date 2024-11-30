@@ -236,27 +236,6 @@
 
 /* Helper types and functions */
 
-//Overall Process
-// A. When Filesystem Starts:
-//    1. Get memory pointer (fsptr) and size
-//    2. Check if initialized (magic number)
-//    3. If not, set up initial structures
-
-// B. When Creating a File:
-//    1. Find free space (from free_list)
-//    2. Create file entry
-//    3. Link it into directory structure
-//    4. Update free space tracking
-
-// C. When Reading/Writing:
-//    1. Find file in directory structure
-//    2. Access its data using offsets
-//    3. Perform operation
-
-// D. When Unmounting:
-//    1. Save to backup file (if using one)
-//    2. All offsets remain valid for next mount
-
 /* YOUR HELPER FUNCTIONS GO HERE */
 
 //magic number for initialization check
@@ -359,55 +338,55 @@ FUNCTIONS FOR INTIALIZING THE FILESYSTEM, CHECCKING IF FILESYSTEM IS ALREADY INI
 //the order for our fs is HEADER -> ROOT DIR -> FREE SPACE
 static int intalize_filesystem(void *fsptr, size_t fssize) {
 
-    // Zero out entire memory region first
+    //zero out entire memory region first
     memset(fsptr, 0, fssize);
 
     myfs_header_t *header = (myfs_header_t *)fsptr;
     
-    // Set basic header information
+    //set basic header information
     header->magic = MAGIC_NUM;
     header->block_size = MYFS_BLOCK_SIZE;
     
-    // Calculate usable space (total size minus header)
+    //calculate usable space (total size minus header)
     size_t usable_space = fssize - sizeof(myfs_header_t);
     
-    // Setup root directory right after header, aligned to block boundary
+    //setup root directory right after header, aligned to block boundary
     header->root_dir = ((sizeof(myfs_header_t) + MYFS_BLOCK_SIZE - 1) 
                        & ~(MYFS_BLOCK_SIZE - 1));
     
     myfs_file_t *root = offset_to_ptr(fsptr, header->root_dir);
     if (!root) return -1;
     
-    // Initialize root directory
+    //initialize root directory
     strcpy(root->name, "/");
     root->type = MYFS_TYPE_DIR;
-    root->parent = 0;  // Root has no parent
-    root->data_block = 0;  // Initially empty
+    root->parent = 0;
+    root->data_block = 0; 
     root->next = 0;
     root->size = 0;
     
-    // Set timestamps
+    //set timestamps
     struct timespec current_time;
     clock_gettime(CLOCK_REALTIME, &current_time);
     root->last_access_time = current_time;
     root->last_modified_time = current_time;
 
-    // Calculate where free space starts (after root directory, aligned to block boundary)
+    //calculate where free space starts (after root directory, aligned to block boundary)
     size_t root_end = header->root_dir + sizeof(myfs_file_t);
     header->free_list = (root_end + MYFS_BLOCK_SIZE - 1) & ~(MYFS_BLOCK_SIZE - 1);
 
-    // Calculate actual usable space for blocks
+    //calculate actual usable space for blocks
     size_t space_for_blocks = usable_space - header->free_list;
     
-    // Calculate total blocks and setup free space tracking
+    //calculate total blocks and setup free space tracking
     header->total_blocks = space_for_blocks / MYFS_BLOCK_SIZE;
     header->free_blocks = header->total_blocks;
 
-    // Initialize free block list
+    //initialize free block list
     myfs_block_header_t *first_block = offset_to_ptr(fsptr, header->free_list);
     if (!first_block) return -1;
     
-    first_block->next = 0;  // This is the only free block initially
+    first_block->next = 0;
     first_block->size = space_for_blocks;
     
     return 0;
@@ -453,26 +432,26 @@ static myfs_offset_t allocate_block(void *fsptr, size_t size) {
 
     myfs_header_t *header = (myfs_header_t *)fsptr;
     
-    // Calculate total size needed including header
+    //calculate total size needed including header
     size_t total_size = size + sizeof(myfs_block_header_t);
     
-    // Round up to nearest block size
+    //round up to nearest block size
     size_t num_blocks = (total_size + MYFS_BLOCK_SIZE - 1) / MYFS_BLOCK_SIZE;
     size_t aligned_size = num_blocks * MYFS_BLOCK_SIZE;
 
-    // Check if we have enough free blocks
+    //check if we have enough free blocks
     if (num_blocks > header->free_blocks) {
         return 0;
     }
 
-    // Variables for traversing the free list
+    //variables for traversing the free list
     myfs_offset_t curr_offset = header->free_list;
     myfs_offset_t prev_offset = 0;
     myfs_offset_t best_fit_offset = 0;
     myfs_offset_t best_fit_prev = 0;
     size_t smallest_size_diff = SIZE_MAX;
 
-    // Find the best fitting block (smallest block that's big enough)
+    //find the best fitting block (smallest block that's big enough)
     while (curr_offset != 0) {
         myfs_block_header_t *curr_block = offset_to_ptr(fsptr, curr_offset);
         if (!curr_block) return 0;
@@ -484,7 +463,7 @@ static myfs_offset_t allocate_block(void *fsptr, size_t size) {
                 best_fit_offset = curr_offset;
                 best_fit_prev = prev_offset;
                 
-                // If perfect fit, stop searching
+                //if perfect fit, stop searching
                 if (size_diff == 0) break;
             }
         }
@@ -492,7 +471,7 @@ static myfs_offset_t allocate_block(void *fsptr, size_t size) {
         curr_offset = curr_block->next;
     }
 
-    // If no suitable block found
+    //if no suitable block found
     if (best_fit_offset == 0) {
         return 0;
     }
@@ -500,9 +479,9 @@ static myfs_offset_t allocate_block(void *fsptr, size_t size) {
     myfs_block_header_t *best_block = offset_to_ptr(fsptr, best_fit_offset);
     size_t remaining_size = best_block->size - aligned_size;
 
-    // If remaining space is enough for a new block (including header)
+    //if remaining space is enough for a new block (including header)
     if (remaining_size >= sizeof(myfs_block_header_t) + MYFS_BLOCK_SIZE) {
-        // Create new block from remaining space
+        //create new block from remaining space
         myfs_offset_t new_offset = best_fit_offset + aligned_size;
         myfs_block_header_t *new_block = offset_to_ptr(fsptr, new_offset);
         if (!new_block) return 0;
@@ -510,7 +489,7 @@ static myfs_offset_t allocate_block(void *fsptr, size_t size) {
         new_block->size = remaining_size;
         new_block->next = best_block->next;
 
-        // Update free list
+        //update free list
         if (best_fit_prev == 0) {
             header->free_list = new_offset;
         } else {
@@ -518,8 +497,8 @@ static myfs_offset_t allocate_block(void *fsptr, size_t size) {
             if (prev_block) prev_block->next = new_offset;
         }
     } else {
-        // Use entire block
-        aligned_size = best_block->size;  // Use full block size
+        //use entire block
+        aligned_size = best_block->size;
         if (best_fit_prev == 0) {
             header->free_list = best_block->next;
         } else {
@@ -528,7 +507,7 @@ static myfs_offset_t allocate_block(void *fsptr, size_t size) {
         }
     }
 
-    // Update allocated block header and free block count
+    //update allocated block header and free block count
     best_block->size = aligned_size;
     header->free_blocks -= (aligned_size / MYFS_BLOCK_SIZE);
 
@@ -540,15 +519,14 @@ static void free_block(void *fsptr, myfs_offset_t offset) {
 
     myfs_header_t *header = (myfs_header_t *)fsptr;
     
-    // Get block header offset
+    //get block header offset
     myfs_offset_t block_start = offset - sizeof(myfs_block_header_t);
     myfs_block_header_t *block = offset_to_ptr(fsptr, block_start);
     if (!block) return;
 
-    // Calculate number of blocks to free
+    //calculate number of blocks to free
     size_t num_blocks = (block->size + MYFS_BLOCK_SIZE - 1) / MYFS_BLOCK_SIZE;
     
-    // Try to coalesce with adjacent free blocks
     myfs_offset_t curr_offset = header->free_list;
     myfs_offset_t prev_offset = 0;
     
@@ -556,19 +534,19 @@ static void free_block(void *fsptr, myfs_offset_t offset) {
         myfs_block_header_t *curr_block = offset_to_ptr(fsptr, curr_offset);
         if (!curr_block) break;
         
-        // Check if this block is adjacent to our freed block
+        //check if this block is adjacent to our freed block
         if (curr_offset + curr_block->size == block_start) {
-            // Merge current block with our freed block
+            //merge current block with our freed block
             curr_block->size += block->size;
             
-            // Update free block count
+            //update free block count
             header->free_blocks += num_blocks;
             
             return;
         }
         
         if (block_start + block->size == curr_offset) {
-            // Merge our freed block with current block
+            //merge our freed block with current block
             block->size += curr_block->size;
             block->next = curr_block->next;
             
@@ -579,7 +557,7 @@ static void free_block(void *fsptr, myfs_offset_t offset) {
                 if (prev_block) prev_block->next = block_start;
             }
             
-            // Update free block count
+            //update free block count
             header->free_blocks += num_blocks;
             
             return;
@@ -591,7 +569,7 @@ static void free_block(void *fsptr, myfs_offset_t offset) {
         curr_offset = curr_block->next;
     }
 
-    // If no merging possible, just add to free list
+    //if no merging possible, just add to free list
     block->next = header->free_list;
     header->free_list = block_start;
     header->free_blocks += num_blocks;
@@ -608,10 +586,10 @@ static myfs_file_t* find_entry(void* fsptr, myfs_file_t* dir, const char* name) 
 
       if (!dir || !name) return NULL;
 
-      // Skip leading slash if present
+      //skip leading slash if present
       while (name[0] == '/') name++;
 
-      // Handle paths with multiple components
+      //handle paths with multiple components
       char *path_copy = strdup(name);
       if (!path_copy) return NULL;
 
@@ -620,19 +598,18 @@ static myfs_file_t* find_entry(void* fsptr, myfs_file_t* dir, const char* name) 
       myfs_file_t *current = dir;
 
       while (component) {
-            // Search for this component in current directory
+            //search for this component in current directory
             myfs_offset_t curr_offset = current->data_block;
             myfs_file_t *found = NULL;
 
-            // Search through current directory's entries
+            //search through current directory's entries
             while (curr_offset != 0) {
                   myfs_file_t *entry = offset_to_ptr(fsptr, curr_offset);
                   if (!entry) break;
 
-                  if (entry->parent == ptr_to_offset(fsptr, current) && 
-                  strcmp(entry->name, component) == 0) {
-                  found = entry;
-                  break;
+                  if (entry->parent == ptr_to_offset(fsptr, current) && strcmp(entry->name, component) == 0) {
+                        found = entry;
+                        break;
                   }
                   curr_offset = entry->next;
             }
@@ -654,10 +631,10 @@ static myfs_file_t* find_entry_in_dir(void* fsptr, myfs_file_t* dir, const char*
       
       if (!dir || !name) return NULL;
 
-      // Skip leading slash if present
+      //skip leading slash if present
       while (name[0] == '/') name++;
       
-      // Search only through entries in this directory
+      //search only through entries in this directory
       myfs_offset_t curr_offset = dir->data_block;
       myfs_offset_t dir_offset = ptr_to_offset(fsptr, dir);
       
@@ -680,15 +657,15 @@ static myfs_file_t* find_entry_in_dir(void* fsptr, myfs_file_t* dir, const char*
 
 static myfs_file_t *find_file(myfs_header_t *header, const char *path) {
 
-      // Handle root directory case
+      //handle root directory case
       if (!path || path[0] == '\0' || strcmp(path, "/") == 0) {
             return offset_to_ptr(header, header->root_dir);
       }
 
-      // Skip leading slash
+      //skip leading slash
       while (path[0] == '/') path++;
 
-      // Start from root directory
+      //start from root directory
       myfs_file_t *current = offset_to_ptr(header, header->root_dir);
       if (!current) return NULL;
 
@@ -716,26 +693,26 @@ static myfs_file_t *find_file(myfs_header_t *header, const char *path) {
 }
 
 static myfs_file_t* find_parent_dir(void* fsptr, const char* path, char** filename, int* errnoptr) {
-    // Check inputs
+    //check inputs
     if (!fsptr || !path || !filename || !errnoptr) {
         if (errnoptr) *errnoptr = EFAULT;
         return NULL;
     }
 
-    // Handle root directory case
+    //handle root directory case
     if (strcmp(path, "/") == 0) {
         *errnoptr = EEXIST;
         return NULL;
     }
 
-    // Make a copy of the path for manipulation
+    //make a copy of the path for manipulation
     char* path_copy = strdup(path);
     if (!path_copy) {
         *errnoptr = ENOMEM;
         return NULL;
     }
 
-    // Find the last slash in the path
+    //find the last slash in the path
     char* last_slash = strrchr(path_copy, '/');
     if (!last_slash) {
         free(path_copy);
@@ -743,7 +720,7 @@ static myfs_file_t* find_parent_dir(void* fsptr, const char* path, char** filena
         return NULL;
     }
 
-    // Extract the filename/dirname
+    //extract the filename/dirname
     *filename = strdup(last_slash + 1);
     if (!*filename) {
         free(path_copy);
@@ -751,23 +728,23 @@ static myfs_file_t* find_parent_dir(void* fsptr, const char* path, char** filena
         return NULL;
     }
 
-    // If path is just "/filename", parent is root
+    //if path is just "/filename", parent is root
     if (last_slash == path_copy) {
         free(path_copy);
         myfs_header_t* header = (myfs_header_t*)fsptr;
         return offset_to_ptr(fsptr, header->root_dir);
     }
 
-    // Null terminate at last slash to get parent path
+    //null terminate at last slash to get parent path
     *last_slash = '\0';
 
-    // Use find_file to get the parent directory
+    //use find_file to get the parent directory
     myfs_header_t* header = (myfs_header_t*)fsptr;
     myfs_file_t* parent = find_file(header, path_copy);
     
     free(path_copy);
 
-    // Check if parent exists and is a directory
+    //check if parent exists and is a directory
     if (!parent) {
         free(*filename);
         *filename = NULL;
@@ -827,7 +804,7 @@ int __myfs_getattr_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
-      // Special case for root directory
+      //special case for root directory
       if (strcmp(path, "/") == 0) {
             memset(stbuf, 0, sizeof(struct stat));
             stbuf->st_mode = S_IFDIR | 0755;
@@ -948,7 +925,7 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
-      // Find the directory
+      //find the directory
       myfs_file_t *dir = find_file(header, path);
       if (!dir) {
             *errnoptr = ENOENT;
@@ -960,7 +937,7 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
-      // Count entries
+      //count entries
       int count = 0;
       myfs_offset_t curr_offset = dir->data_block;
       myfs_offset_t dir_offset = ptr_to_offset(fsptr, dir);
@@ -973,15 +950,15 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
             break;
       }
       
-      // Store the next offset before any other operations
+      //store the next offset before any other operations
       myfs_offset_t next_offset = entry->next;
       
-      // Only count entries that belong to this directory
+      //only count entries that belong to this directory
       if (entry->parent == dir_offset) {
             count++;
       }
 
-      // Break if we detect a cycle - next points to current or previous entry
+      //break if we detect a cycle - next points to current or previous entry
       if (next_offset == curr_offset) {
             break;
       }
@@ -989,18 +966,18 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
       curr_offset = next_offset;
       }
 
-      // No entries
+      //no entries
       if (count == 0) {
             return 0;
       }
 
-      // Allocate array for names
+      //allocate array for names
       *namesptr = calloc(count, sizeof(char *));
       if (!*namesptr) {
             *errnoptr = ENOMEM;
             return -1;
       }
-      // Fill array with names
+      //fill array with names
       curr_offset = dir->data_block;
       int index = 0;
       
@@ -1014,7 +991,7 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
             if (entry->parent == ptr_to_offset(fsptr, dir)) {
                   (*namesptr)[index] = strdup(entry->name);
                   if (!(*namesptr)[index]) {
-                        // Cleanup on error
+                        //cleanup on error
                         for (int i = 0; i < index; i++) {
                               free((*namesptr)[i]);
                         }
@@ -1056,14 +1033,14 @@ int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
       myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
       if (!header) return -1;
 
-      // Get parent directory and filename
+      //get parent directory and filename
       char *filename = NULL;
       myfs_file_t *parent_dir = find_parent_dir(fsptr, path, &filename, errnoptr);
       if (!parent_dir) {
             return -1;
       }
 
-      // Check if file already exists in this directory
+      //check if file already exists in this directory
       myfs_file_t *existing = find_entry_in_dir(fsptr, parent_dir, filename);
       if (existing) {
             free(filename);
@@ -1071,7 +1048,7 @@ int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
             return -1;
       }
 
-      // Allocate space for new file
+      //allocate space for new file
       myfs_offset_t new_file_offset = allocate_block(fsptr, sizeof(myfs_file_t));
       if (new_file_offset == 0) {
             free(filename);
@@ -1079,7 +1056,7 @@ int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
             return -1;
       }
 
-      // Initialize new file
+      //initialize new file
       myfs_file_t *new_file = offset_to_ptr(fsptr, new_file_offset);
       if (!new_file) {
             free(filename);
@@ -1093,11 +1070,11 @@ int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
       new_file->size = 0;
       new_file->parent = ptr_to_offset(fsptr, parent_dir);
 
-      // Add to parent directory
+      //add to parent directory
       new_file->next = parent_dir->data_block;
       parent_dir->data_block = new_file_offset;
 
-      // Set timestamps
+      //set timestamps
       struct timespec current_time;
       clock_gettime(CLOCK_REALTIME, &current_time);
       new_file->last_access_time = current_time;
@@ -1233,7 +1210,7 @@ int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
             return -1;
       }
 
-      // Cannot remove root
+      //cannot remove root
       if (strcmp(path, "/") == 0) {
             *errnoptr = EBUSY;
             return -1;
@@ -1242,29 +1219,29 @@ int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
       myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
       if (!header) return -1;
 
-      // Get parent directory and dirname
+      //get parent directory and dirname
       char *dirname;
       myfs_file_t *parent_dir = find_parent_dir(fsptr, path, &dirname, errnoptr);
       if (!parent_dir) {
             return -1;
       }
 
-      // Find directory to remove in parent
+      //find directory to remove in parent
       myfs_file_t *dir_to_remove = find_entry_in_dir(fsptr, parent_dir, dirname);
-      free(dirname); // Free dirname as we don't need it anymore
+      free(dirname); //free dirname as we don't need it anymore
 
       if (!dir_to_remove) {
             *errnoptr = ENOENT;
             return -1;
       }
 
-      // Verify it's a directory
+      //verify it's a directory
       if (dir_to_remove->type != MYFS_TYPE_DIR) {
             *errnoptr = ENOTDIR;
             return -1;
       }
 
-      // Check directory is empty by scanning its entries
+      //check directory is empty by scanning its entries
       myfs_offset_t curr_child = dir_to_remove->data_block;
       while (curr_child != 0) {
             myfs_file_t *child = offset_to_ptr(fsptr, curr_child);
@@ -1273,7 +1250,7 @@ int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
                   return -1;
             }
             
-            // Only count entries that belong to this directory
+            //only count entries that belong to this directory
             if (child->parent == ptr_to_offset(fsptr, dir_to_remove)) {
                   *errnoptr = ENOTEMPTY;
                   return -1;
@@ -1281,7 +1258,7 @@ int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
             curr_child = child->next;
       }
 
-      // Remove directory from parent's list
+      //remove directory from parent's list
       myfs_offset_t prev_offset = 0;
       myfs_offset_t curr_offset = parent_dir->data_block;
       
@@ -1293,7 +1270,7 @@ int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
             }
 
             if (curr == dir_to_remove) {
-                  // Update links
+                  //update links
                   if (prev_offset == 0) {
                   parent_dir->data_block = curr->next;
                   } else {
@@ -1305,11 +1282,11 @@ int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
                   prev->next = curr->next;
                   }
 
-                  // Clear parent reference and free the directory entry
+                  //clear parent reference and free the directory entry
                   curr->parent = 0;
                   free_block(fsptr, curr_offset);
                   
-                  // Update parent timestamp
+                  //update parent timestamp
                   struct timespec current_time;
                   clock_gettime(CLOCK_REALTIME, &current_time);
                   parent_dir->last_modified_time = current_time;
@@ -1344,7 +1321,7 @@ int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
             return -1;
       }
 
-      // Cannot create root
+      //cannot create root
       if (strcmp(path, "/") == 0) {
             *errnoptr = EEXIST;
             return -1;
@@ -1353,12 +1330,12 @@ int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
       myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
       if (!header) return -1;
 
-      // Get parent directory and dirname
+      //get parent directory and dirname
       char *dirname;
       myfs_file_t *parent_dir = find_parent_dir(fsptr, path, &dirname, errnoptr);
       if (!parent_dir) return -1;
 
-      // Check if directory already exists
+      //check if directory already exists
       myfs_file_t *existing = find_entry_in_dir(fsptr, parent_dir, dirname);
       if (existing) {
             free(dirname);
@@ -1366,7 +1343,7 @@ int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
             return -1;
       }
 
-      // Allocate space for new directory
+      //allocate space for new directory
       myfs_offset_t new_dir_offset = allocate_block(fsptr, sizeof(myfs_file_t));
       if (new_dir_offset == 0) {
             free(dirname);
@@ -1374,7 +1351,7 @@ int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
             return -1;
       }
 
-      // Initialize new directory
+      //initialize new directory
       myfs_file_t *new_dir = offset_to_ptr(fsptr, new_dir_offset);
       if (!new_dir) {
             free(dirname);
@@ -1382,24 +1359,24 @@ int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
             return -1;
       }
 
-      // Set up new directory
+      //set up new directory
       memset(new_dir, 0, sizeof(myfs_file_t));
       strncpy(new_dir->name, dirname, MYFS_MAX_FILENAME);
       new_dir->type = MYFS_TYPE_DIR;
       new_dir->size = 0;
       new_dir->parent = ptr_to_offset(fsptr, parent_dir);
-      new_dir->data_block = 0;  // No entries yet
+      new_dir->data_block = 0;  //no entries yet
 
-      // Link into parent's directory structure
+      //link into parent's directory structure
       new_dir->next = parent_dir->data_block;
       parent_dir->data_block = new_dir_offset;
 
-      // Set timestamps
+      //set timestamps
       struct timespec current_time;
       clock_gettime(CLOCK_REALTIME, &current_time);
       new_dir->last_access_time = current_time;
       new_dir->last_modified_time = current_time;
-      
+
       free(dirname);
       return 0;
 }
@@ -1423,7 +1400,7 @@ int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
 int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
                          const char *from, const char *to) {
       
-      // Check parameters
+      //check parameters
       if (!fsptr || !from || !to || !errnoptr) {
             if (errnoptr) {
                   *errnoptr = EFAULT;
@@ -1431,38 +1408,38 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
-      // If paths are the same, do nothing
+      //if paths are the same, do nothing
       if (strcmp(from, to) == 0) {
             return 0;
       }
       
-      // Get filesystem header
+      //get filesystem header
       myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
       if (!header) {
             *errnoptr = EFAULT;
             return -1;
       }
 
-      // Get root directory for path traversal
+      //get root directory for path traversal
       myfs_file_t *root_dir = offset_to_ptr(fsptr, header->root_dir);
       if (!root_dir) {
             *errnoptr = EFAULT;
             return -1;
       }
 
-      // Find source parent directory and name
+      //find source parent directory and name
       char *from_name;
       myfs_file_t *from_parent = find_parent_dir(fsptr, from, &from_name, errnoptr);
       if (!from_parent) {
             return -1;
       }
 
-      // Find source entry in its parent directory
+      //find source entry in its parent directory
       myfs_offset_t prev_offset = 0;
       myfs_offset_t curr_offset = from_parent->data_block;
       myfs_file_t *from_entry = NULL;
 
-      // Loop through parent directory entries
+      //loop through parent directory entries
       while (curr_offset != 0) {
             myfs_file_t *curr_ptr = offset_to_ptr(fsptr, curr_offset);
             if (!curr_ptr) {
@@ -1485,7 +1462,7 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
-      // Find destination parent directory and name
+      //find destination parent directory and name
       char *to_name;
       myfs_file_t *to_parent = find_parent_dir(fsptr, to, &to_name, errnoptr);
       if (!to_parent) {
@@ -1493,13 +1470,13 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
-      // Save the original next pointer before any modifications
+      //save the original next pointer before any modifications
       myfs_offset_t original_next = from_entry->next;
 
-      // Check if destination exists
+      //check if destination exists
       myfs_file_t *existing_to = find_entry_in_dir(fsptr, to_parent, to_name);
       if (existing_to) {
-            // Cannot overwrite directory with non-directory
+            //cannot overwrite directory with non-directory
             if (existing_to->type == MYFS_TYPE_DIR && from_entry->type != MYFS_TYPE_DIR) {
                   free(from_name);
                   free(to_name);
@@ -1507,7 +1484,7 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
                   return -1;
             }
             
-            // Cannot overwrite non-directory with directory
+            //cannot overwrite non-directory with directory
             if (existing_to->type != MYFS_TYPE_DIR && from_entry->type == MYFS_TYPE_DIR) {
                   free(from_name);
                   free(to_name);
@@ -1515,7 +1492,7 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
                   return -1;
             }
 
-            // Directory must be empty if it's being overwritten
+            //directory must be empty if it's being overwritten
             if (existing_to->type == MYFS_TYPE_DIR && existing_to->data_block != 0) {
                   free(from_name);
                   free(to_name);
@@ -1523,7 +1500,7 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
                   return -1;
             }
 
-            // Remove existing destination entry
+            //remove existing destination entry
             myfs_offset_t existing_prev = 0;
             myfs_offset_t existing_curr = to_parent->data_block;
 
@@ -1543,7 +1520,7 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
             }
       }
 
-      // Update source directory links
+      //update source directory links
       if (prev_offset == 0) {
             from_parent->data_block = original_next;
       } else {
@@ -1553,21 +1530,21 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
             }
       }
 
-      // Update the entry itself
+      //update the entry itself
       strncpy(from_entry->name, to_name, MYFS_MAX_FILENAME);
       from_entry->parent = ptr_to_offset(fsptr, to_parent);
       
-      // Update destination directory links
+      //update destination directory links
       from_entry->next = to_parent->data_block;
       to_parent->data_block = ptr_to_offset(fsptr, from_entry);
 
-      // Update timestamps
+      //update timestamps
       struct timespec current_time;
       clock_gettime(CLOCK_REALTIME, &current_time);
       from_parent->last_modified_time = current_time;
       to_parent->last_modified_time = current_time;
 
-      // Cleanup
+      //cleanup
       free(from_name);
       free(to_name);
       return 0;
@@ -1605,19 +1582,19 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
-      // Ensure it is a regular file
+      //ensure it is a regular file
       if (file->type != MYFS_TYPE_FILE) {
-            *errnoptr = EBADF; // Path is not a file
+            *errnoptr = EBADF; //path is not a file
             return -1;
       }
 
-      // if there is no size change
+      //if there is no size change
       if (file->size == (size_t)offset)
             return 0;
 
-      // If the size will be shortened
+      //if the size will be shortened
       if (file->size > (size_t)offset) {
-            // Truncate by freeing unused blocks
+            //truncate by freeing unused blocks
             size_t bytes_to_remove = file->size - offset;
             myfs_offset_t current_block = file->data_block;
 
@@ -1625,31 +1602,31 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
                   myfs_block_header_t *block = offset_to_ptr(fsptr, current_block);
                   size_t block_size = (block->size > bytes_to_remove) ? bytes_to_remove : block->size;
 
-                  myfs_offset_t next_block = block->next; // Save next block
-                  free_block(fsptr, current_block);       // Free current block
-                  bytes_to_remove -= block_size;         // Reduce remaining bytes to remove
-                  current_block = next_block;            // Move to next block
+                  myfs_offset_t next_block = block->next; //save next block
+                  free_block(fsptr, current_block);       //free current block
+                  bytes_to_remove -= block_size;         //reduce remaining bytes to remove
+                  current_block = next_block;            //move to next block
             }
 
-            // Update file size
+            //update file size
             file->size = offset;
 
             //end with a newline
             char *new_data_space = offset_to_ptr(fsptr, file->data_block);
             new_data_space[file->size - 1] = '\n';
 
-      } // If the size will be expanded
+      } //if the size will be expanded
       else {
-           // Extend by adding zeros
+           //extend by adding zeros
             size_t bytes_to_add = offset - file->size;
             char *file_data = offset_to_ptr(fsptr, file->data_block);
 
             if (file_data == NULL) {
-                  *errnoptr = EFAULT; // Filesystem corruption
+                  *errnoptr = EFAULT; //filesystem corruption
                   return -1;
             }
 
-            // Find the new space for the data block
+            //find the new space for the data block
             myfs_offset_t new_block = allocate_block(fsptr, offset);
             if (new_block == 0) {
                   *errnoptr = ENOSPC;
@@ -1662,19 +1639,19 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
                   return -1;
             }
 
-            // Copy the memory from old space to new space
+            //copy the memory from old space to new space
             memcpy(new_space, file_data, (size_t)offset);
 
-            // Free old memory space
+            //free old memory space
             free_block(fsptr, file->data_block);
 
-            // Set the new memory space
+            //set the new memory space
             file->data_block = new_block;
 
-            // Append zeros in the remaining space
+            //append zeros in the remaining space
             memset(new_space + file->size, 0, bytes_to_add);
 
-            // Update file size
+            //update file size
             file->size = offset;
       }
 
@@ -1723,9 +1700,9 @@ int __myfs_open_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
-      // Ensure it is a regular file
+      //ensure it is a regular file
       if (file->type != MYFS_TYPE_FILE) {
-            *errnoptr = EBADF; // Path is not a file
+            *errnoptr = EBADF; //path is not a file
             return -1;
       }
 
@@ -1763,15 +1740,15 @@ int __myfs_read_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
-      // Ensure it is a regular file
+      //ensure it is a regular file
       if (file->type != MYFS_TYPE_FILE) {
-            // *errnoptr = EBADF; // Path is not a file
+            // *errnoptr = EBADF; //path is not a file
             //CHANGE:
             *errnoptr = EISDIR;
             return -1;
       }
 
-      // Check if offset is valid
+      //check if offset is valid
       if(offset < 0){
             *errnoptr = EINVAL;
             return -1;
@@ -1793,10 +1770,10 @@ int __myfs_read_implem(void *fsptr, size_t fssize, int *errnoptr,
       }
 
 
-      // Perform the read
+      //perform the read
       char *file_data = offset_to_ptr(fsptr, file->data_block);
       if (file_data == NULL) {
-            *errnoptr = EFAULT; // Filesystem corruption
+            *errnoptr = EFAULT; //filesystem corruption
             return -1;
       }
       memcpy(buf, file_data + offset, bytes_to_read);
@@ -1806,7 +1783,7 @@ int __myfs_read_implem(void *fsptr, size_t fssize, int *errnoptr,
       clock_gettime(CLOCK_REALTIME, &curr_time);
       file->last_access_time = curr_time;
 
-      // Return the number of bytes read
+      //return the number of bytes read
       return bytes_to_read;
 }
 
@@ -1842,22 +1819,22 @@ int __myfs_write_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
-      // Ensure it is a regular file
+      //ensure it is a regular file
       if (file->type != MYFS_TYPE_FILE) {
-            *errnoptr = EISDIR; // Path is not a file
+            *errnoptr = EISDIR; //path is not a file
             return -1;
       }
 
-      // Check if offset is valid
+      //check if offset is valid
       if (offset < 0 || (size_t)offset > file->size) {
-            *errnoptr = EINVAL; // Invalid offset
+            *errnoptr = EINVAL; //invalid offset
             return -1;
       }
 
-      // Calculate required size to accommodate the write
+      //calculate required size to accommodate the write
       size_t required_size = (size_t)offset + size;
 
-      // Allocate more blocks if necessary
+      //allocate more blocks if necessary
       if (required_size > file->size) {
             //round up to nearest blick
             size_t additional_size = ((required_size + MYFS_BLOCK_SIZE - 1) / MYFS_BLOCK_SIZE) * MYFS_BLOCK_SIZE;
@@ -1865,7 +1842,7 @@ int __myfs_write_implem(void *fsptr, size_t fssize, int *errnoptr,
             //allocated new vblock
             myfs_offset_t new_block = allocate_block(fsptr, additional_size);
             if (new_block == 0) {
-                  *errnoptr = ENOSPC; // No space left on device
+                  *errnoptr = ENOSPC; //no space left on device
                   return -1;
             }
 
@@ -1887,13 +1864,13 @@ int __myfs_write_implem(void *fsptr, size_t fssize, int *errnoptr,
                   }
             }
 
-            file->data_block = new_block; // Link the new block to the file
+            file->data_block = new_block; //link the new block to the file
       }
 
-      // get pointer to file data
+      //get pointer to file data
       char *file_data = offset_to_ptr(fsptr, file->data_block);
       if (file_data == NULL) {
-            *errnoptr = EFAULT; // Filesystem corruption
+            *errnoptr = EFAULT; //filesystem corruption
             return -1;
       }
 
@@ -1911,7 +1888,7 @@ int __myfs_write_implem(void *fsptr, size_t fssize, int *errnoptr,
       file->last_modified_time = current_time;
       file->last_access_time = current_time;
 
-      // Return the number of bytes written
+      //return the number of bytes written
       return size;
 }
 
@@ -1945,9 +1922,9 @@ int __myfs_utimens_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
-      // Update access and modification times
-      file->last_access_time = ts[0]; // Access time
-      file->last_modified_time = ts[1]; // Modification time
+      //update access and modification times
+      file->last_access_time = ts[0]; //access time
+      file->last_modified_time = ts[1]; //modification time
 
       return 0;
 }
@@ -1981,12 +1958,12 @@ In case the struct for statvfs needs to be defined
 typedef struct statvfs_struct statvfs;
 
 struct statvfs_struct {
-      __fsword_t f_bsize;   // Optimal transfer block size 
-      fsblkcnt_t f_blocks;  // Total data blocks in filesystem 
-      fsblkcnt_t f_bfree;   // Free blocks in filesystem 
-      fsblkcnt_t f_bavail;  // Free blocks available to
+      __fsword_t f_bsize;   //optimal transfer block size 
+      fsblkcnt_t f_blocks;  //total data blocks in filesystem 
+      fsblkcnt_t f_bfree;   //free blocks in filesystem 
+      fsblkcnt_t f_bavail;  //free blocks available to
                               unprivileged user 
-      __fsword_t f_namemax; // Maximum length of filenames 
+      __fsword_t f_namemax; //maximum length of filenames 
 };
 */
 
@@ -2000,15 +1977,15 @@ int __myfs_statfs_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
-      // Populate the statvfs structure
-      memset(stbuf, 0, sizeof(struct statvfs)); // Zero out the structure first
+      //populate the statvfs structure
+      memset(stbuf, 0, sizeof(struct statvfs)); //zero out the structure first
 
-      stbuf->f_bsize = header->block_size;      // Block size
-      stbuf->f_blocks = header->total_blocks;   // Total blocks in the filesystem
-      stbuf->f_bfree = header->free_blocks;     // Free blocks in the filesystem
-      stbuf->f_bavail = header->free_blocks;    // Blocks available to unprivileged users
-      stbuf->f_namemax = MYFS_MAX_FILENAME;     // Maximum file name length
+      stbuf->f_bsize = header->block_size;      //block size
+      stbuf->f_blocks = header->total_blocks;   //total blocks in the filesystem
+      stbuf->f_bfree = header->free_blocks;     //free blocks in the filesystem
+      stbuf->f_bavail = header->free_blocks;    //blocks available to unprivileged users
+      stbuf->f_namemax = MYFS_MAX_FILENAME;     //maximum file name length
 
-      // Success
+      //success
       return 0;
 }
