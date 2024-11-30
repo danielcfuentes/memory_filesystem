@@ -1715,9 +1715,19 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
 
       // If the size will be shortened
       if (file->size > (size_t)offset) {
-            // Update free space
-            myfs_offset_t data_block_offset = file->data_block + offset;
-            free_block(fsptr, data_block_offset);
+            // Truncate by freeing unused blocks
+            size_t bytes_to_remove = file->size - offset;
+            myfs_offset_t current_block = file->data_block;
+
+            while (bytes_to_remove > 0 && current_block != 0) {
+                  myfs_block_header_t *block = offset_to_ptr(fsptr, current_block);
+                  size_t block_size = (block->size > bytes_to_remove) ? bytes_to_remove : block->size;
+
+                  myfs_offset_t next_block = block->next; // Save next block
+                  free_block(fsptr, current_block);       // Free current block
+                  bytes_to_remove -= block_size;         // Reduce remaining bytes to remove
+                  current_block = next_block;            // Move to next block
+            }
 
       } // If the size will be expanded
       else {
