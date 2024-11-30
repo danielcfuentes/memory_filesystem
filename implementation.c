@@ -1754,7 +1754,7 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
             }
 
             // Copy the memory from old space to new space
-            memcpy(new_space, file_data, file->size - 1);
+            memcpy(new_space, file_data, (size_t)offset);
 
             // Free old memory space
             free_block(fsptr, file->data_block);
@@ -1767,7 +1767,7 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
       }
 
       char * data = offset_to_ptr(fsptr, file->data_block);
-      data[offset - 1] = '\0';
+      data[offset - 1] = "\0";
 
       // Update file size
       file->size = offset;
