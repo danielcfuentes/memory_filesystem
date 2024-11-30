@@ -1729,7 +1729,8 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
                   current_block = next_block;            // Move to next block
             }
 
-            memcpy(file->data_block + offset, '\0', 1);
+            myfs_block_header_t *null_terminator = offset_to_ptr(fsptr, file->data_block + offset - 1);
+            memcpy(null_terminator, '\0', 1);
 
       } // If the size will be expanded
       else {
