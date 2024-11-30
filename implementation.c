@@ -358,39 +358,70 @@ FUNCTIONS FOR INTIALIZING THE FILESYSTEM, CHECCKING IF FILESYSTEM IS ALREADY INI
 //a fucntion to intialize the filesystem
 //the order for our fs is HEADER -> ROOT DIR -> FREE SPACE
 static int intalize_filesystem(void *fsptr, size_t fssize) {
-      printf("Initializing filesystem\n");
+    printf("Initializing filesystem with size %zu bytes\n", fssize);
 
-      // Zero out entire memory region first
-      memset(fsptr, 0, fssize);
+    // Zero out entire memory region first
+    memset(fsptr, 0, fssize);
 
-      myfs_header_t *header = (myfs_header_t *)fsptr;
-      header->magic = MAGIC_NUM;
-      header->block_size = MYFS_BLOCK_SIZE;
-      
-      // Reserve space for header and root directory
-      size_t reserved_space = sizeof(myfs_header_t) + sizeof(myfs_file_t);
-      header->total_blocks = (fssize - reserved_space) / MYFS_BLOCK_SIZE;
-      header->free_blocks = header->total_blocks;
-      
-      // Set up root directory
-      header->root_dir = sizeof(myfs_header_t);
-      myfs_file_t *root = offset_to_ptr(fsptr, header->root_dir);
-      strcpy(root->name, "/");
-      root->type = MYFS_TYPE_DIR;
-      root->parent = 0;
-      root->next = 0;
-      root->data_block = 0;
-      
-      // Set up free list to start after root directory
-      header->free_list = (reserved_space + MYFS_BLOCK_SIZE - 1) & ~(MYFS_BLOCK_SIZE - 1);
-      myfs_block_header_t *first_block = offset_to_ptr(fsptr, header->free_list);
-      first_block->next = 0;
-      first_block->size = fssize - header->free_list;
+    myfs_header_t *header = (myfs_header_t *)fsptr;
+    
+    // Set basic header information
+    header->magic = MAGIC_NUM;
+    header->block_size = MYFS_BLOCK_SIZE;
+    
+    // Calculate usable space (total size minus header)
+    size_t usable_space = fssize - sizeof(myfs_header_t);
+    
+    // Setup root directory right after header, aligned to block boundary
+    header->root_dir = ((sizeof(myfs_header_t) + MYFS_BLOCK_SIZE - 1) 
+                       & ~(MYFS_BLOCK_SIZE - 1));
+    
+    myfs_file_t *root = offset_to_ptr(fsptr, header->root_dir);
+    if (!root) return -1;
+    
+    // Initialize root directory
+    strcpy(root->name, "/");
+    root->type = MYFS_TYPE_DIR;
+    root->parent = 0;  // Root has no parent
+    root->data_block = 0;  // Initially empty
+    root->next = 0;
+    root->size = 0;
+    
+    // Set timestamps
+    struct timespec current_time;
+    clock_gettime(CLOCK_REALTIME, &current_time);
+    root->last_access_time = current_time;
+    root->last_modified_time = current_time;
 
-      printf("Filesystem initialized: root at %zu, free list at %zu\n", 
-            header->root_dir, header->free_list);
-      
-      return 0;
+    // Calculate where free space starts (after root directory, aligned to block boundary)
+    size_t root_end = header->root_dir + sizeof(myfs_file_t);
+    header->free_list = (root_end + MYFS_BLOCK_SIZE - 1) & ~(MYFS_BLOCK_SIZE - 1);
+
+    // Calculate actual usable space for blocks
+    size_t space_for_blocks = usable_space - header->free_list;
+    
+    // Calculate total blocks and setup free space tracking
+    header->total_blocks = space_for_blocks / MYFS_BLOCK_SIZE;
+    header->free_blocks = header->total_blocks;
+
+    // Initialize free block list
+    myfs_block_header_t *first_block = offset_to_ptr(fsptr, header->free_list);
+    if (!first_block) return -1;
+    
+    first_block->next = 0;  // This is the only free block initially
+    first_block->size = space_for_blocks;
+
+    printf("Filesystem initialized:\n");
+    printf("  Total size: %zu\n", fssize);
+    printf("  Usable space: %zu\n", usable_space);
+    printf("  Block size: %zu\n", header->block_size);
+    printf("  Total blocks: %zu\n", header->total_blocks);
+    printf("  Free blocks: %zu\n", header->free_blocks);
+    printf("  Root directory at: %zu\n", header->root_dir);
+    printf("  Free list starts at: %zu\n", header->free_list);
+    printf("  First free block size: %zu\n", first_block->size);
+    
+    return 0;
 }
 
 //function to check if the filestysem is already initalized
@@ -438,125 +469,170 @@ FUNCTIONS FOR MEMORY ALLOCATION
 
 */
 
-//function to free a block of mem
-static void free_block(void *fsptr, myfs_offset_t offset) {
-      if(offset == 0) {
-            return;
-      }
+static myfs_offset_t allocate_block(void *fsptr, size_t size) {
+    if (!fsptr || size == 0) return 0;
 
-      //get fs header
-      myfs_header_t *header = (myfs_header_t *)fsptr;
+    myfs_header_t *header = (myfs_header_t *)fsptr;
+    
+    // Calculate total size needed including header
+    size_t total_size = size + sizeof(myfs_block_header_t);
+    
+    // Round up to nearest block size
+    size_t num_blocks = (total_size + MYFS_BLOCK_SIZE - 1) / MYFS_BLOCK_SIZE;
+    size_t aligned_size = num_blocks * MYFS_BLOCK_SIZE;
 
-      //find the start of the block
-      myfs_offset_t block_start = offset - sizeof(myfs_block_header_t);
+    // Check if we have enough free blocks
+    if (num_blocks > header->free_blocks) {
+        printf("Request too large: needs %zu blocks (%zu bytes), only %zu blocks free\n", 
+              num_blocks, aligned_size, header->free_blocks);
+        return 0;
+    }
 
-      //get ptr to block header
-      myfs_block_header_t *block_header = offset_to_ptr(fsptr, block_start);
+    printf("Attempting to allocate %zu bytes (aligned to %zu)\n", size, aligned_size);
 
-      //add block to the beginning of the free list like adding to the start of a linked list
-      //point to curr first block
-      block_header->next = header->free_list;
-      //set new first block to the block we just added
-      header->free_list = block_start;
-      //update data
-      header->free_blocks++;
+    // Variables for traversing the free list
+    myfs_offset_t curr_offset = header->free_list;
+    myfs_offset_t prev_offset = 0;
+    myfs_offset_t best_fit_offset = 0;
+    myfs_offset_t best_fit_prev = 0;
+    size_t smallest_size_diff = SIZE_MAX;
+
+    // Find the best fitting block (smallest block that's big enough)
+    while (curr_offset != 0) {
+        myfs_block_header_t *curr_block = offset_to_ptr(fsptr, curr_offset);
+        if (!curr_block) return 0;
+
+        if (curr_block->size >= aligned_size) {
+            size_t size_diff = curr_block->size - aligned_size;
+            if (size_diff < smallest_size_diff) {
+                smallest_size_diff = size_diff;
+                best_fit_offset = curr_offset;
+                best_fit_prev = prev_offset;
+                
+                // If perfect fit, stop searching
+                if (size_diff == 0) break;
+            }
+        }
+        prev_offset = curr_offset;
+        curr_offset = curr_block->next;
+    }
+
+    // If no suitable block found
+    if (best_fit_offset == 0) {
+        printf("No suitable block found\n");
+        return 0;
+    }
+
+    myfs_block_header_t *best_block = offset_to_ptr(fsptr, best_fit_offset);
+    size_t remaining_size = best_block->size - aligned_size;
+
+    // If remaining space is enough for a new block (including header)
+    if (remaining_size >= sizeof(myfs_block_header_t) + MYFS_BLOCK_SIZE) {
+        // Create new block from remaining space
+        myfs_offset_t new_offset = best_fit_offset + aligned_size;
+        myfs_block_header_t *new_block = offset_to_ptr(fsptr, new_offset);
+        if (!new_block) return 0;
+
+        new_block->size = remaining_size;
+        new_block->next = best_block->next;
+
+        // Update free list
+        if (best_fit_prev == 0) {
+            header->free_list = new_offset;
+        } else {
+            myfs_block_header_t *prev_block = offset_to_ptr(fsptr, best_fit_prev);
+            if (prev_block) prev_block->next = new_offset;
+        }
+    } else {
+        // Use entire block
+        aligned_size = best_block->size;  // Use full block size
+        if (best_fit_prev == 0) {
+            header->free_list = best_block->next;
+        } else {
+            myfs_block_header_t *prev_block = offset_to_ptr(fsptr, best_fit_prev);
+            if (prev_block) prev_block->next = best_block->next;
+        }
+    }
+
+    // Update allocated block header and free block count
+    best_block->size = aligned_size;
+    header->free_blocks -= (aligned_size / MYFS_BLOCK_SIZE);
+
+    printf("Successfully allocated block at offset %zu, size %zu\n", 
+           best_fit_offset + sizeof(myfs_block_header_t), 
+           aligned_size);
+
+    return best_fit_offset + sizeof(myfs_block_header_t);
 }
 
-//function to allocate a block of mem given the fsptr and the size of mem wanted
-static myfs_offset_t allocate_block(void *fsptr, size_t size) {
-      printf("Attempting to allocate block of size: %zu\n", size);
+static void free_block(void *fsptr, myfs_offset_t offset) {
+    if (!fsptr || offset == 0) return;
 
-      if (!fsptr || size == 0) {
-            printf("Invalid parameters in allocate_block\n");
-            return 0;
-      }
+    myfs_header_t *header = (myfs_header_t *)fsptr;
+    
+    // Get block header offset
+    myfs_offset_t block_start = offset - sizeof(myfs_block_header_t);
+    myfs_block_header_t *block = offset_to_ptr(fsptr, block_start);
+    if (!block) return;
 
-      // Get filesystem header
-      myfs_header_t *header = (myfs_header_t *)fsptr;
-      printf("Total blocks: %zu, Free blocks: %zu\n",
-            header->total_blocks, header->free_blocks);
-
-      // Calculate required size including header
-      size_t aligned_size = (size + 7) & ~7;  // Align to 8 bytes
-      size_t required_size = aligned_size + sizeof(myfs_block_header_t);
-
-      // For small allocations, use smaller alignment
-      if (required_size < MYFS_BLOCK_SIZE) {
-            required_size = ((required_size + 15) & ~15);  // Align to 16 bytes
-      } else {
-            // For larger allocations, align to block size
-            required_size = ((required_size + MYFS_BLOCK_SIZE - 1) / MYFS_BLOCK_SIZE) 
-                        * MYFS_BLOCK_SIZE;
-      }
-
-      printf("Required size after alignment: %zu\n", required_size);
-
-      // Traverse free block list
-      myfs_offset_t curr_offset = header->free_list;
-      myfs_offset_t prev_offset = 0;
-
-      while (curr_offset != 0) {
-            myfs_block_header_t *curr_block = offset_to_ptr(fsptr, curr_offset);
-            if (curr_block == NULL) {
-                  printf("Invalid block pointer encountered\n");
-                  return 0;
+    // Calculate number of blocks to free
+    size_t num_blocks = (block->size + MYFS_BLOCK_SIZE - 1) / MYFS_BLOCK_SIZE;
+    
+    // Try to coalesce with adjacent free blocks
+    myfs_offset_t curr_offset = header->free_list;
+    myfs_offset_t prev_offset = 0;
+    
+    while (curr_offset != 0) {
+        myfs_block_header_t *curr_block = offset_to_ptr(fsptr, curr_offset);
+        if (!curr_block) break;
+        
+        // Check if this block is adjacent to our freed block
+        if (curr_offset + curr_block->size == block_start) {
+            // Merge current block with our freed block
+            curr_block->size += block->size;
+            
+            // Update free block count
+            header->free_blocks += num_blocks;
+            
+            printf("Merged freed block (offset %zu, size %zu) with previous block\n", 
+                   offset, block->size);
+            return;
+        }
+        
+        if (block_start + block->size == curr_offset) {
+            // Merge our freed block with current block
+            block->size += curr_block->size;
+            block->next = curr_block->next;
+            
+            if (prev_offset == 0) {
+                header->free_list = block_start;
+            } else {
+                myfs_block_header_t *prev_block = offset_to_ptr(fsptr, prev_offset);
+                if (prev_block) prev_block->next = block_start;
             }
+            
+            // Update free block count
+            header->free_blocks += num_blocks;
+            
+            printf("Merged freed block (offset %zu, size %zu) with next block\n", 
+                   offset, block->size);
+            return;
+        }
+        
+        if (curr_offset > block_start) break;
+        
+        prev_offset = curr_offset;
+        curr_offset = curr_block->next;
+    }
 
-            printf("Examining block at offset %zu, size %zu\n", 
-                  curr_offset, curr_block->size);
+    // If no merging possible, just add to free list
+    block->next = header->free_list;
+    header->free_list = block_start;
+    header->free_blocks += num_blocks;
 
-            // Check if block is large enough
-            if (curr_block->size >= required_size) {
-                  printf("Found suitable block\n");
-
-                  // Handle block removal from free list
-                  if (prev_offset == 0) {
-                  // If it's the first block
-                  header->free_list = curr_block->next;
-                  } else {
-                  // If it's in the middle/end of list
-                  myfs_block_header_t *prev_block = offset_to_ptr(fsptr, prev_offset);
-                  if (prev_block != NULL) {
-                        prev_block->next = curr_block->next;
-                  }
-                  }
-
-                  // Split block if there's enough extra space
-                  size_t remaining_size = curr_block->size - required_size;
-                  if (remaining_size >= sizeof(myfs_block_header_t) + 64) { // Minimum split size
-                  // Create new free block from remaining space
-                  myfs_offset_t new_free_offset = curr_offset + required_size;
-                  myfs_block_header_t *new_free_block = offset_to_ptr(fsptr, new_free_offset);
-                  
-                  if (new_free_block != NULL) {
-                        new_free_block->size = remaining_size;
-                        new_free_block->next = header->free_list;
-                        header->free_list = new_free_offset;
-                        curr_block->size = required_size;
-                  }
-                  }
-
-                  // Update filesystem stats
-                  header->free_blocks--;
-
-                  // Mark block as used
-                  curr_block->next = 0;
-
-                  printf("Allocated block at offset %zu\n", 
-                        curr_offset + sizeof(myfs_block_header_t));
-
-                  // Return offset to usable memory (after block header)
-                  return curr_offset + sizeof(myfs_block_header_t);
-            }
-
-            // Move to next block
-            prev_offset = curr_offset;
-            curr_offset = curr_block->next;
-      }
-
-      printf("No suitable block found\n");
-      return 0;
-      }   
+    printf("Freed block at offset %zu, size %zu, blocks %zu\n", 
+           offset, block->size, num_blocks);
+}
 
 /*
 
@@ -566,74 +642,45 @@ FUNCTIONS FOR PATHS
 
 //function to find an entry (file or directory) in a directory by name to locate files/directories
 static myfs_file_t* find_entry(void* fsptr, myfs_file_t* dir, const char* name) {
-      printf("find_entry: searching for '%s' in directory\n", name);
+      printf("find_entry: searching for '%s'\n", name);
       
-      if (!dir || !name) {
-            printf("find_entry: invalid parameters\n");
-            return NULL;
-      }
+      if (!dir || !name) return NULL;
 
       // Skip leading slash if present
-      if (name[0] == '/') name++;
-      
-      // Start from first entry in directory
-      myfs_offset_t curr_offset = dir->data_block;
-      printf("find_entry: starting search at offset %zu\n", curr_offset);
-      
-      while (curr_offset != 0) {
-            myfs_file_t* entry = offset_to_ptr(fsptr, curr_offset);
-            if (!entry) {
-                  printf("find_entry: invalid entry pointer\n");
-                  return NULL;
-            }
-            
-            printf("find_entry: examining entry '%s'\n", entry->name);
-            // Compare names, ignoring any leading slash
-            if (strcmp(entry->name, name) == 0) {
-                  printf("find_entry: found matching entry\n");
-                  return entry;
-            }
-            
-            curr_offset = entry->next;
-      }
-      
-      printf("find_entry: entry not found\n");
-      return NULL;
-}
+      while (name[0] == '/') name++;
 
-static myfs_file_t *find_file(myfs_header_t *header, const char *path) {
-      printf("find_file: looking for path '%s'\n", path);
-      
-      // Handle root directory case
-      if (strcmp(path, "/") == 0) {
-            return offset_to_ptr(header, header->root_dir);
-      }
-
-      // Skip leading slash if present
-      if (path[0] == '/') path++;
-
-      // Start from root directory
-      myfs_file_t *current = offset_to_ptr(header, header->root_dir);
-      if (!current) {
-            printf("find_file: couldn't get root directory\n");
-            return NULL;
-      }
-
-      char *path_copy = strdup(path);
-      if (!path_copy) {
-            printf("find_file: memory allocation failed\n");
-            return NULL;
-      }
+      // Handle paths with multiple components
+      char *path_copy = strdup(name);
+      if (!path_copy) return NULL;
 
       char *saveptr = NULL;
       char *component = strtok_r(path_copy, "/", &saveptr);
+      myfs_file_t *current = dir;
 
       while (component) {
-            printf("find_file: looking for component '%s'\n", component);
-            myfs_file_t *found = find_entry((void*)header, current, component);
-            
+            // Search for this component in current directory
+            myfs_offset_t curr_offset = current->data_block;
+            myfs_file_t *found = NULL;
+
+            printf("find_entry: looking for component '%s' in directory '%s'\n", 
+                  component, current->name);
+
+            // Search through current directory's entries
+            while (curr_offset != 0) {
+                  myfs_file_t *entry = offset_to_ptr(fsptr, curr_offset);
+                  if (!entry) break;
+
+                  printf("find_entry: examining entry '%s'\n", entry->name);
+
+                  if (entry->parent == ptr_to_offset(fsptr, current) && 
+                  strcmp(entry->name, component) == 0) {
+                  found = entry;
+                  break;
+                  }
+                  curr_offset = entry->next;
+            }
+
             if (!found) {
-                  printf("find_file: component '%s' not found\n", component);
                   free(path_copy);
                   return NULL;
             }
@@ -643,7 +690,83 @@ static myfs_file_t *find_file(myfs_header_t *header, const char *path) {
       }
 
       free(path_copy);
-      printf("find_file: found path\n");
+      return current;
+}
+
+static myfs_file_t* find_entry_in_dir(void* fsptr, myfs_file_t* dir, const char* name) {
+      printf("find_entry_in_dir: searching for '%s' in directory '%s'\n", name, dir->name);
+      
+      if (!dir || !name) return NULL;
+
+      // Skip leading slash if present
+      while (name[0] == '/') name++;
+      
+      // Search only through entries in this directory
+      myfs_offset_t curr_offset = dir->data_block;
+      myfs_offset_t dir_offset = ptr_to_offset(fsptr, dir);
+      
+      printf("find_entry_in_dir: dir offset %zu, data block %zu\n", 
+            dir_offset, curr_offset);
+      
+      while (curr_offset != 0) {
+            myfs_file_t* entry = offset_to_ptr(fsptr, curr_offset);
+            if (!entry) {
+                  printf("find_entry_in_dir: invalid entry pointer\n");
+                  return NULL;
+            }
+            
+            printf("find_entry_in_dir: examining entry '%s' (parent: %zu)\n", 
+                  entry->name, entry->parent);
+            
+            if (entry->parent == dir_offset && strcmp(entry->name, name) == 0) {
+                  printf("find_entry_in_dir: found matching entry\n");
+                  return entry;
+            }
+            
+            curr_offset = entry->next;
+      }
+      
+      printf("find_entry_in_dir: entry not found\n");
+      return NULL;
+}
+
+static myfs_file_t *find_file(myfs_header_t *header, const char *path) {
+      printf("find_file: looking for path '%s'\n", path);
+      
+      // Handle root directory case
+      if (!path || path[0] == '\0' || strcmp(path, "/") == 0) {
+            return offset_to_ptr(header, header->root_dir);
+      }
+
+      // Skip leading slash
+      while (path[0] == '/') path++;
+
+      // Start from root directory
+      myfs_file_t *current = offset_to_ptr(header, header->root_dir);
+      if (!current) return NULL;
+
+      char *path_copy = strdup(path);
+      if (!path_copy) return NULL;
+      
+      char *saveptr = NULL;
+      char *component = strtok_r(path_copy, "/", &saveptr);
+      
+      while (component) {
+            printf("find_file: looking for component '%s' in dir '%s'\n", 
+                  component, current->name);
+            
+            myfs_file_t *next = find_entry_in_dir(header, current, component);
+            if (!next) {
+                  printf("find_file: component not found\n");
+                  free(path_copy);
+                  return NULL;
+            }
+            
+            current = next;
+            component = strtok_r(NULL, "/", &saveptr);
+      }
+
+      free(path_copy);
       return current;
 }
 
@@ -876,94 +999,73 @@ int __myfs_getattr_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
                           const char *path, char ***namesptr) {
-
       printf("readdir called for path: %s\n", path);
       
-      int entry_count = 0;
-      int i = 0;
-
-      //check if insitalized and get header
       myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
-      if (header == NULL){
-            *errnoptr = EFAULT;
-            return -1;
-      }
+      if (!header) return -1;
 
-      // For empty root directory, return success with no entries
-      if (strcmp(path, "/") == 0) {
-            printf("Reading root directory\n");
-            *namesptr = NULL;
-            return 0;
-      }
-
-      //get rpot dir to use it to find other entries
-      myfs_file_t *root_dir = offset_to_ptr(fsptr, header->root_dir);
-      if(root_dir == NULL){
-            *errnoptr = EFAULT;
-            return -1;
-      }
-
-      //find the file/dir entru for given path
-      myfs_file_t *dir = find_entry(fsptr, root_dir, path);
-      if (dir == NULL){
+      // Find the directory
+      myfs_file_t *dir = find_file(header, path);
+      if (!dir) {
             *errnoptr = ENOENT;
             return -1;
       }
 
-      //make sure uts a type fo dir
-      if(dir->type != MYFS_TYPE_DIR){
+      if (dir->type != MYFS_TYPE_DIR) {
             *errnoptr = ENOTDIR;
             return -1;
       }
 
-      //count num of entries in dir
+      // Count entries
+      int count = 0;
       myfs_offset_t curr_offset = dir->data_block;
-      while (curr_offset != 0){
-            entry_count++;
-            myfs_file_t *entry_file = offset_to_ptr(fsptr, curr_offset);
-            curr_offset = entry_file->next;
+      
+      while (curr_offset != 0) {
+            myfs_file_t *entry = offset_to_ptr(fsptr, curr_offset);
+            if (!entry) break;
+            
+            // Only count entries that belong to this directory
+            if (entry->parent == ptr_to_offset(fsptr, dir)) {
+                  count++;
+            }
+            curr_offset = entry->next;
       }
 
-      //checj if dir is empty
-      if (entry_count == 0){
-            *namesptr = NULL;
-            return 0;
-      }
+      // No entries
+      if (count == 0) return 0;
 
-      //allocate array of char pointers for num of entries
-      *namesptr = calloc(entry_count, sizeof(char *));
-      if (*namesptr == NULL){
-            *errnoptr = EINVAL;
+      // Allocate array for names
+      *namesptr = calloc(count, sizeof(char *));
+      if (!*namesptr) {
+            *errnoptr = ENOMEM;
             return -1;
       }
 
-      //fill arr wuth the names of the files
+      // Fill array with names
       curr_offset = dir->data_block;
-      while (curr_offset != 0 && i < entry_count){
-            myfs_file_t *entry_file = offset_to_ptr(fsptr, curr_offset);
-
-            //allocate space for name plus null term
-            size_t name_len = strlen(entry_file->name);
-            (*namesptr)[i] = calloc(name_len + 1, sizeof(char));
-            if ((*namesptr)[i] == NULL) {
-                  //cleanup already allocated memory
-                  for (int j = 0; j < i; j++) {
-                        free((*namesptr)[j]);
+      int index = 0;
+      
+      while (curr_offset != 0 && index < count) {
+            myfs_file_t *entry = offset_to_ptr(fsptr, curr_offset);
+            if (!entry) break;
+            
+            if (entry->parent == ptr_to_offset(fsptr, dir)) {
+                  (*namesptr)[index] = strdup(entry->name);
+                  if (!(*namesptr)[index]) {
+                  // Cleanup on error
+                  for (int i = 0; i < index; i++) {
+                        free((*namesptr)[i]);
                   }
                   free(*namesptr);
-                  *errnoptr = EINVAL;
+                  *errnoptr = ENOMEM;
                   return -1;
+                  }
+                  index++;
             }
-
-            //copy the name
-            strcpy((*namesptr)[i], entry_file->name);
-
-            //move to next entry
-            curr_offset = entry_file->next;
-            i++;
+            curr_offset = entry->next;
       }
 
-      return entry_count;
+      return count;
 }
 
 /* Implements an emulation of the mknod system call for regular files
@@ -985,7 +1087,7 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
 */
 int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr, const char *path) {
       printf("mknod called for path: %s\n", path);
-
+      
       if (!fsptr || !path || !errnoptr) {
             if (errnoptr) *errnoptr = EFAULT;
             return -1;
@@ -995,56 +1097,44 @@ int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
       if (!header) return -1;
 
       // Get parent directory and filename
-      char *filename;
+      char *filename = NULL;
       myfs_file_t *parent_dir = find_parent_dir(fsptr, path, &filename, errnoptr);
       if (!parent_dir) {
-            printf("mknod: parent directory not found\n");
+            printf("mknod: could not find parent directory\n");
             return -1;
       }
 
-      printf("mknod: parent directory found, checking if file exists\n");
-
-      // Check if file already exists
-      myfs_file_t *existing = find_entry(fsptr, parent_dir, filename);
+      // Check if file already exists in this directory
+      myfs_file_t *existing = find_entry_in_dir(fsptr, parent_dir, filename);
       if (existing) {
-            printf("mknod: file already exists\n");
             free(filename);
             *errnoptr = EEXIST;
             return -1;
       }
 
-      printf("mknod: allocating space for new file\n");
-
       // Allocate space for new file
       myfs_offset_t new_file_offset = allocate_block(fsptr, sizeof(myfs_file_t));
       if (new_file_offset == 0) {
-            printf("mknod: failed to allocate space\n");
             free(filename);
             *errnoptr = ENOSPC;
             return -1;
       }
 
-      printf("mknod: initializing new file at offset %zu\n", new_file_offset);
-
       // Initialize new file
       myfs_file_t *new_file = offset_to_ptr(fsptr, new_file_offset);
       if (!new_file) {
-            printf("mknod: failed to get pointer to new file\n");
             free(filename);
             *errnoptr = EFAULT;
             return -1;
       }
 
-      // Clear memory and set initial values
       memset(new_file, 0, sizeof(myfs_file_t));
       strncpy(new_file->name, filename, MYFS_MAX_FILENAME);
       new_file->type = MYFS_TYPE_FILE;
       new_file->size = 0;
       new_file->parent = ptr_to_offset(fsptr, parent_dir);
-      new_file->data_block = 0;
 
       // Add to parent directory
-      printf("mknod: adding file to parent directory\n");
       new_file->next = parent_dir->data_block;
       parent_dir->data_block = new_file_offset;
 
@@ -1054,7 +1144,6 @@ int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
       new_file->last_access_time = current_time;
       new_file->last_modified_time = current_time;
 
-      printf("mknod: file created successfully\n");
       free(filename);
       return 0;
 }
@@ -1178,106 +1267,74 @@ int __myfs_unlink_implem(void *fsptr, size_t fssize, int *errnoptr,
    The error codes are documented in man 2 rmdir.
 
 */
-int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr,
-                        const char *path) {
-      //check params
-      if(!fsptr || !path || !errnoptr){
-            if (errnoptr){
-                  //error code for bad address
-                  *errnoptr = EFAULT;
-            }
+int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *path) {
+      printf("rmdir called for path: %s\n", path);
+      
+      if (!fsptr || !path || !errnoptr) {
+            if (errnoptr) *errnoptr = EFAULT;
             return -1;
       }
 
-      //edgecase if the path is just the root dir, we fail since we cant remove root dir
-      if(strcmp(path, "/") == 0){
-            //error code sicne the root is always in use
+      // Cannot remove root
+      if (strcmp(path, "/") == 0) {
             *errnoptr = EBUSY;
             return -1;
       }
 
-      //initalized fs
       myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
-      //if failed
-      if (!header){
+      if (!header) return -1;
+
+      // Find directory to remove
+      myfs_file_t *dir = find_file(header, path);
+      if (!dir) {
+            *errnoptr = ENOENT;
             return -1;
       }
 
-      //get the filename and parent dir
-      char *dirname;
-      myfs_file_t *parent_dir = find_parent_dir(fsptr, path, &dirname, errnoptr);
-      if (parent_dir == NULL){
+      // Verify it's a directory
+      if (dir->type != MYFS_TYPE_DIR) {
+            *errnoptr = ENOTDIR;
             return -1;
       }
 
-      //parent dir offset
-      myfs_offset_t parent_offset = ptr_to_offset(fsptr, parent_dir);
+      // Check if directory is empty
+      if (dir->data_block != 0) {
+            printf("rmdir: directory not empty (data_block: %zu)\n", dir->data_block);
+            *errnoptr = ENOTEMPTY;
+            return -1;
+      }
 
-      //keep track of previous entry for LL
-      myfs_offset_t prev_offset = 0;
-      //first entry in dir
-      myfs_offset_t curr_offset = parent_dir -> data_block;
-      //pointer to curr dir entry bieng checked
-      myfs_file_t* curr_dir_ptr = NULL;
+      // Find parent directory
+      myfs_file_t *parent = offset_to_ptr(fsptr, dir->parent);
+      if (!parent) {
+            *errnoptr = EFAULT;
+            return -1;
+      }
 
-      //loop thoriugh dir entries
-      while(curr_offset != 0){
-            curr_dir_ptr = offset_to_ptr(fsptr, curr_offset);
+      // Remove from parent's list
+      myfs_offset_t *prev_ptr = &parent->data_block;
+      myfs_offset_t curr = parent->data_block;
 
-            //check if this is the file we want to unlink
-            if (strcmp(curr_dir_ptr->name, dirname) == 0){
-                  //make sure we are deleting a dir not a fi;e
-                  if(curr_dir_ptr->type != MYFS_TYPE_DIR){
-                        free(dirname);
-                        //error if trying to delete a file instead
-                        *errnoptr = EISDIR;
-                        return -1;
-                  }
+      while (curr != 0) {
+            myfs_file_t *entry = offset_to_ptr(fsptr, curr);
+            if (!entry) {
+                  *errnoptr = EFAULT;
+                  return -1;
+            }
 
-                  //check parent relationshop
-                  if(curr_dir_ptr->parent != parent_offset){
-                        free(dirname);
-                        *errnoptr = EFAULT;
-                        return -1;
-                  }
-
-                  //check if dir is empty if is not then cannot delete
-                  if(curr_dir_ptr->data_block !=0){
-                        free(dirname);
-                        *errnoptr = ENOTEMPTY;
-                        return -1;
-                  }
-
-                  //remove from the dir list so update the dir links to keep this file
-                  //first entry in dir
-                  if(prev_offset == 0){
-                        parent_dir ->data_block = curr_dir_ptr->next;
-                  }
-                  //the file is either in th emiddle or end of dir
-                  else{
-                        myfs_file_t* prev_dir_ptr = offset_to_ptr(fsptr, prev_offset);
-                        prev_dir_ptr->next = curr_dir_ptr->next;
-                  }
-
-                  //free dir
-                  free_block(fsptr, curr_offset);
-
-                  //we good
-                  free(dirname);
+            if (entry == dir) {
+                  *prev_ptr = entry->next;
+                  free_block(fsptr, curr);
                   return 0;
             }
 
-            //update pointers
-            prev_offset = curr_offset;
-            curr_offset = curr_dir_ptr->next;
+            prev_ptr = &entry->next;
+            curr = entry->next;
       }
 
-      //if the file was not found
-      free(dirname);
       *errnoptr = ENOENT;
       return -1;
 }
-
 /* Implements an emulation of the mkdir system call on the filesystem 
    of size fssize pointed to by fsptr. 
 
@@ -1290,75 +1347,76 @@ int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr,
    The error codes are documented in man 2 mkdir.
 
 */
-int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr,
-                        const char *path) {
-      //check params
-      if(!fsptr || !path || !errnoptr){
-            if (errnoptr){
-                  //error code for bad address
-                  *errnoptr = EFAULT;
-            }
+int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *path) {
+      printf("mkdir called for path: %s\n", path);
+      
+      if (!fsptr || !path || !errnoptr) {
+            if (errnoptr) *errnoptr = EFAULT;
             return -1;
       }
 
-      //edgecase if the path is just the root dir, we fail bc it already exists
-      if(strcmp(path, "/") == 0){
+      // Cannot create root
+      if (strcmp(path, "/") == 0) {
             *errnoptr = EEXIST;
             return -1;
       }
 
-      //initalized fs
       myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
-      //if failed
-      if (!header){
-            return -1;
-      }
+      if (!header) return -1;
 
-      //get the filename and parent dir
+      // Get parent directory and dirname
       char *dirname;
       myfs_file_t *parent_dir = find_parent_dir(fsptr, path, &dirname, errnoptr);
-      if (parent_dir == NULL){
-            return -1;
-      }
+      if (!parent_dir) return -1;
 
-      //check if dir already exists
-      if (find_entry(fsptr, parent_dir, dirname)){
+      printf("mkdir: checking if directory exists in parent '%s'\n", parent_dir->name);
+
+      // Check if directory already exists
+      myfs_file_t *existing = find_entry_in_dir(fsptr, parent_dir, dirname);
+      if (existing) {
+            printf("mkdir: directory already exists\n");
             free(dirname);
             *errnoptr = EEXIST;
             return -1;
       }
 
-      //check dir name len
-      if(strlen(dirname) > MYFS_MAX_FILENAME){
-            free(dirname);
-            *errnoptr = ENAMETOOLONG;
-            return -1;
-      }
-
-      //allocate space for new dir
+      // Allocate space for new directory
       myfs_offset_t new_dir_offset = allocate_block(fsptr, sizeof(myfs_file_t));
-      if (new_dir_offset == 0){
+      if (new_dir_offset == 0) {
+            printf("mkdir: failed to allocate space\n");
             free(dirname);
             *errnoptr = ENOSPC;
             return -1;
       }
 
-      //intliazie new dir
-      myfs_file_t *newdir = offset_to_ptr(fsptr, new_dir_offset);
-      memset(newdir, 0, sizeof(myfs_file_t));
+      // Initialize new directory
+      myfs_file_t *new_dir = offset_to_ptr(fsptr, new_dir_offset);
+      if (!new_dir) {
+            printf("mkdir: failed to get pointer to new directory\n");
+            free(dirname);
+            *errnoptr = EFAULT;
+            return -1;
+      }
 
-      //set attrvitues
-      strcpy(newdir->name, dirname);
-      newdir->type = MYFS_TYPE_DIR;
-      newdir->size = 0;
-      newdir->parent = ptr_to_offset(fsptr, parent_dir);
-      newdir->data_block = 0;
+      // Set up new directory
+      memset(new_dir, 0, sizeof(myfs_file_t));
+      strncpy(new_dir->name, dirname, MYFS_MAX_FILENAME);
+      new_dir->type = MYFS_TYPE_DIR;
+      new_dir->size = 0;
+      new_dir->parent = ptr_to_offset(fsptr, parent_dir);
+      new_dir->data_block = 0;  // No entries yet
 
-      //add dir to parent list
-      newdir->next = parent_dir->data_block;
+      // Link into parent's directory structure
+      new_dir->next = parent_dir->data_block;
       parent_dir->data_block = new_dir_offset;
 
-      //we good
+      // Set timestamps
+      struct timespec current_time;
+      clock_gettime(CLOCK_REALTIME, &current_time);
+      new_dir->last_access_time = current_time;
+      new_dir->last_modified_time = current_time;
+
+      printf("mkdir: directory created successfully\n");
       free(dirname);
       return 0;
 }
