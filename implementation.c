@@ -359,84 +359,39 @@ FUNCTIONS FOR INTIALIZING THE FILESYSTEM, CHECCKING IF FILESYSTEM IS ALREADY INI
 //the order for our fs is HEADER -> ROOT DIR -> FREE SPACE
 static int intalize_filesystem(void *fsptr, size_t fssize) {
       printf("Initializing filesystem\n");
-      printf("FSSize: %zu, Header size: %zu, Block size: %d\n",
-            fssize, sizeof(myfs_header_t), MYFS_BLOCK_SIZE);
 
-      // Check if memory region is large enough for header plus minimum structure
-      if (fssize < sizeof(myfs_header_t) + MYFS_BLOCK_SIZE) {
-            printf("Memory region too small\n");
-            return -1;
-      }
+      // Zero out entire memory region first
+      memset(fsptr, 0, fssize);
 
-      // Initialize filesystem header
       myfs_header_t *header = (myfs_header_t *)fsptr;
-      
-      // Set magic number to mark filesystem as initialized
       header->magic = MAGIC_NUM;
-      printf("Set magic number: 0x%x\n", header->magic);
-      
-      // Set block size
       header->block_size = MYFS_BLOCK_SIZE;
-      printf("Set block size: %zu\n", header->block_size);
-
-      // Calculate actual usable space (total size minus header)
-      size_t usable_space = fssize - sizeof(myfs_header_t);
       
-      // Calculate total blocks (usable space divided by block size)
-      header->total_blocks = usable_space / MYFS_BLOCK_SIZE;
+      // Reserve space for header and root directory
+      size_t reserved_space = sizeof(myfs_header_t) + sizeof(myfs_file_t);
+      header->total_blocks = (fssize - reserved_space) / MYFS_BLOCK_SIZE;
+      header->free_blocks = header->total_blocks;
       
-      // Calculate free blocks (total minus one for root directory)
-      header->free_blocks = header->total_blocks - 1;
-      printf("Total blocks: %zu, Free blocks: %zu\n",
-            header->total_blocks, header->free_blocks);
-
-      // Set root directory location (right after header)
+      // Set up root directory
       header->root_dir = sizeof(myfs_header_t);
+      myfs_file_t *root = offset_to_ptr(fsptr, header->root_dir);
+      strcpy(root->name, "/");
+      root->type = MYFS_TYPE_DIR;
+      root->parent = 0;
+      root->next = 0;
+      root->data_block = 0;
+      
+      // Set up free list to start after root directory
+      header->free_list = (reserved_space + MYFS_BLOCK_SIZE - 1) & ~(MYFS_BLOCK_SIZE - 1);
+      myfs_block_header_t *first_block = offset_to_ptr(fsptr, header->free_list);
+      first_block->next = 0;
+      first_block->size = fssize - header->free_list;
 
-      // Set free list start (after root directory)
-      header->free_list = header->root_dir + sizeof(myfs_file_t);
-
-      // Initialize the free block list
-      myfs_block_header_t *first_free_block = offset_to_ptr(fsptr, header->free_list);
-      if (first_free_block == NULL) {
-            printf("Failed to initialize free block list\n");
-            return -1;
-      }
-
-      // Initialize first free block
-      first_free_block->next = 0;  // No next block initially
-      // Size is all remaining space after root directory
-      first_free_block->size = usable_space - sizeof(myfs_file_t);
-
-      // Initialize root directory
-      myfs_file_t *root_dir = offset_to_ptr(fsptr, header->root_dir);
-      if (root_dir == NULL) {
-            printf("Failed to initialize root directory\n");
-            return -1;
-      }
-
-      // Clear root directory memory
-      memset(root_dir, 0, sizeof(myfs_file_t));
-
-      // Set root directory attributes
-      strcpy(root_dir->name, "/");
-      root_dir->type = MYFS_TYPE_DIR;
-      root_dir->next = 0;
-      root_dir->parent = 0;
-      root_dir->size = 0;
-      root_dir->data_block = 0;
-
-      // Set current time for root directory
-      struct timespec current_time;
-      clock_gettime(CLOCK_REALTIME, &current_time);
-      root_dir->last_access_time = current_time;
-      root_dir->last_modified_time = current_time;
-
-      printf("Filesystem initialized successfully\n");
-      printf("Root directory at offset: %zu\n", header->root_dir);
-      printf("First free block at offset: %zu\n", header->free_list);
+      printf("Filesystem initialized: root at %zu, free list at %zu\n", 
+            header->root_dir, header->free_list);
+      
       return 0;
-      }
+}
 
 //function to check if the filestysem is already initalized
 static int is_initialized(void *fsptr, size_t fssize) {
@@ -611,81 +566,84 @@ FUNCTIONS FOR PATHS
 
 //function to find an entry (file or directory) in a directory by name to locate files/directories
 static myfs_file_t* find_entry(void* fsptr, myfs_file_t* dir, const char* name) {
-    //check input parameters
-    if (!dir || !name) return NULL;
-    
-    //get offset to first entry in directory
-    myfs_offset_t curr_offset = dir->data_block;
-    
-    //traverse linked list of directory entries
-    while (curr_offset != 0) {
-        //convert offset to pointer
-        myfs_file_t* entry = offset_to_ptr(fsptr, curr_offset);
-
-        //add null check
-        if (entry ==NULL) return NULL;
-
-        // Add parent directory check
-        if (entry->parent == ptr_to_offset(fsptr, dir) && 
-            strcmp(entry->name, name) == 0) {
-            return entry;
-        }
-        //move to next entry
-        curr_offset = entry->next;
-    }
-    return NULL;
-}
-
-static myfs_file_t *find_file(myfs_header_t *myfs, const char *path) {
-
-      // Start from the root directory
-      myfs_file_t *current = offset_to_ptr(myfs, myfs->root_dir);
-
-      // Duplicate the path for tokenization
-      char *path_copy = strdup(path);
-      if (path_copy == NULL) {
-            return NULL; // Memory allocation failed
+      printf("find_entry: searching for '%s' in directory\n", name);
+      
+      if (!dir || !name) {
+            printf("find_entry: invalid parameters\n");
+            return NULL;
       }
 
-      // Tokenize the path using '/' as the delimiter
-      char *token = strtok(path_copy, "/");
-
-      while (token != NULL && current != NULL) {
-            // Search for the current token in the current directory
-            myfs_offset_t child_offset = current->next; // Start with the first child
-            myfs_offset_t directory_offset = current->parent; // Store the parent directory to mantain ourselves in the same directory
-            current = NULL; // Reset current
-
-            while (child_offset != 0) {
-                  // Get the child file or directory
-                  myfs_file_t *child = offset_to_ptr(myfs, child_offset);
-
-                  // Break once we reach the next level directory
-                  if (child->parent != directory_offset) {
-                        break;
-                  }
-
-                  // Check if the names match
-                  if (strcmp(child->name, token) == 0) {
-                        current = child; // Move to the matched child
-                  }
-
-                  // Move to the next file in the list
-                  child_offset = child->next;
+      // Skip leading slash if present
+      if (name[0] == '/') name++;
+      
+      // Start from first entry in directory
+      myfs_offset_t curr_offset = dir->data_block;
+      printf("find_entry: starting search at offset %zu\n", curr_offset);
+      
+      while (curr_offset != 0) {
+            myfs_file_t* entry = offset_to_ptr(fsptr, curr_offset);
+            if (!entry) {
+                  printf("find_entry: invalid entry pointer\n");
+                  return NULL;
             }
+            
+            printf("find_entry: examining entry '%s'\n", entry->name);
+            // Compare names, ignoring any leading slash
+            if (strcmp(entry->name, name) == 0) {
+                  printf("find_entry: found matching entry\n");
+                  return entry;
+            }
+            
+            curr_offset = entry->next;
+      }
+      
+      printf("find_entry: entry not found\n");
+      return NULL;
+}
 
-            if (current == NULL) {
-                  // If no match was found, cleanup and return NULL
+static myfs_file_t *find_file(myfs_header_t *header, const char *path) {
+      printf("find_file: looking for path '%s'\n", path);
+      
+      // Handle root directory case
+      if (strcmp(path, "/") == 0) {
+            return offset_to_ptr(header, header->root_dir);
+      }
+
+      // Skip leading slash if present
+      if (path[0] == '/') path++;
+
+      // Start from root directory
+      myfs_file_t *current = offset_to_ptr(header, header->root_dir);
+      if (!current) {
+            printf("find_file: couldn't get root directory\n");
+            return NULL;
+      }
+
+      char *path_copy = strdup(path);
+      if (!path_copy) {
+            printf("find_file: memory allocation failed\n");
+            return NULL;
+      }
+
+      char *saveptr = NULL;
+      char *component = strtok_r(path_copy, "/", &saveptr);
+
+      while (component) {
+            printf("find_file: looking for component '%s'\n", component);
+            myfs_file_t *found = find_entry((void*)header, current, component);
+            
+            if (!found) {
+                  printf("find_file: component '%s' not found\n", component);
                   free(path_copy);
                   return NULL;
             }
 
-            // Get the next token in the path
-            token = strtok(NULL, "/");
+            current = found;
+            component = strtok_r(NULL, "/", &saveptr);
       }
 
-    // Cleanup and return the found file or directory
       free(path_copy);
+      printf("find_file: found path\n");
       return current;
 }
 
@@ -1025,86 +983,78 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
    The error codes are documented in man 2 mknod.
 
 */
-int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr,
-                        const char *path) {
-      //check params
-      if(!fsptr || !path || !errnoptr){
-            if (errnoptr){
-                  //error code for bad address
-                  *errnoptr = EFAULT;
-            }
+int __myfs_mknod_implem(void *fsptr, size_t fssize, int *errnoptr, const char *path) {
+      printf("mknod called for path: %s\n", path);
+
+      if (!fsptr || !path || !errnoptr) {
+            if (errnoptr) *errnoptr = EFAULT;
             return -1;
       }
 
-      //initalized fs
       myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
-      //if failed
-      if (!header){
-            return -1;
-      }
+      if (!header) return -1;
 
-      //get parent dir and filename
+      // Get parent directory and filename
       char *filename;
       myfs_file_t *parent_dir = find_parent_dir(fsptr, path, &filename, errnoptr);
-      if (!parent_dir){
+      if (!parent_dir) {
+            printf("mknod: parent directory not found\n");
             return -1;
       }
 
-      //check if file already exists in parent dir
-      //search  the parent dir with the filename
-      if(find_entry(fsptr, parent_dir, filename)){
+      printf("mknod: parent directory found, checking if file exists\n");
+
+      // Check if file already exists
+      myfs_file_t *existing = find_entry(fsptr, parent_dir, filename);
+      if (existing) {
+            printf("mknod: file already exists\n");
             free(filename);
-            //error code for file already exists
             *errnoptr = EEXIST;
             return -1;
       }
 
-      //check the file's name len
-      if(strlen(filename) > MYFS_MAX_FILENAME){
-            free(filename);
-            //error code for filename too long
-            *errnoptr = ENAMETOOLONG;
-            return -1;
-      }
+      printf("mknod: allocating space for new file\n");
 
-      //allocate space for new file struct
+      // Allocate space for new file
       myfs_offset_t new_file_offset = allocate_block(fsptr, sizeof(myfs_file_t));
-      //if no space avaible the offset is zero and error
-      if (new_file_offset == 0){
+      if (new_file_offset == 0) {
+            printf("mknod: failed to allocate space\n");
             free(filename);
-            //error code for no space left
             *errnoptr = ENOSPC;
             return -1;
       }
 
-      //if it worked intilaized new file sturct
-      myfs_file_t *new_file_ptr = offset_to_ptr(fsptr, new_file_offset);
-      memset(new_file_ptr, 0, sizeof(myfs_file_t));
+      printf("mknod: initializing new file at offset %zu\n", new_file_offset);
 
+      // Initialize new file
+      myfs_file_t *new_file = offset_to_ptr(fsptr, new_file_offset);
+      if (!new_file) {
+            printf("mknod: failed to get pointer to new file\n");
+            free(filename);
+            *errnoptr = EFAULT;
+            return -1;
+      }
 
-      strncpy(new_file_ptr->name, filename, MYFS_MAX_FILENAME);
-      new_file_ptr->type = MYFS_TYPE_FILE;
-      new_file_ptr->size = 0;
-      new_file_ptr->parent = ptr_to_offset(fsptr, parent_dir);
-      new_file_ptr->data_block = 0;
+      // Clear memory and set initial values
+      memset(new_file, 0, sizeof(myfs_file_t));
+      strncpy(new_file->name, filename, MYFS_MAX_FILENAME);
+      new_file->type = MYFS_TYPE_FILE;
+      new_file->size = 0;
+      new_file->parent = ptr_to_offset(fsptr, parent_dir);
+      new_file->data_block = 0;
 
-      //set current time for both access and modification times
-      struct timespec current_time;
-      clock_gettime(CLOCK_REALTIME, &current_time);
-      new_file_ptr->last_access_time = current_time;
-      new_file_ptr->last_modified_time = current_time;
-
-      //add file to parent dir list. like inssertin to the head of a LL.
-      //new files next ptr points to curr first file
-      //parent dir now points to new file
-      new_file_ptr->next = parent_dir->data_block;
+      // Add to parent directory
+      printf("mknod: adding file to parent directory\n");
+      new_file->next = parent_dir->data_block;
       parent_dir->data_block = new_file_offset;
 
-      //update parent dir modified time
-      parent_dir->last_modified_time = current_time;
-      parent_dir->last_access_time = current_time;
+      // Set timestamps
+      struct timespec current_time;
+      clock_gettime(CLOCK_REALTIME, &current_time);
+      new_file->last_access_time = current_time;
+      new_file->last_modified_time = current_time;
 
-      //free and return
+      printf("mknod: file created successfully\n");
       free(filename);
       return 0;
 }
