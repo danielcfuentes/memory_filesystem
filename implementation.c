@@ -1766,11 +1766,12 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
             memset(new_space + file->size, 0, bytes_to_add);
       }
 
-      char * data = offset_to_ptr(fsptr, file->data_block);
-      data[offset - 1] = "\0";
-
       // Update file size
       file->size = offset;
+
+      //end with a newline
+      char *new_data_space = offset_to_ptr(fsptr, file->data_block);
+      new_data_space[file->size - 1] = '\n';
 
       return 0;
 }
