@@ -998,60 +998,106 @@ int __myfs_getattr_implem(void *fsptr, size_t fssize, int *errnoptr,
 
 */
 int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
-                          const char *path, char ***namesptr) {
+                              const char *path, char ***namesptr) {
+      printf("=== READDIR START ===\n");
       printf("readdir called for path: %s\n", path);
+      printf("fssize: %zu\n", fssize);
       
       myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
-      if (!header) return -1;
+      if (!header) {
+            printf("ERROR: Failed to get filesystem header\n");
+            return -1;
+      }
+      printf("Got filesystem header successfully. Root dir offset: %zu\n", header->root_dir);
 
       // Find the directory
+      printf("Finding directory for path: %s\n", path);
       myfs_file_t *dir = find_file(header, path);
       if (!dir) {
+            printf("ERROR: Directory not found\n");
             *errnoptr = ENOENT;
             return -1;
       }
+      printf("Found directory. Type: %d, Name: %s, Parent offset: %zu, Data block: %zu\n", 
+            dir->type, dir->name, dir->parent, dir->data_block);
 
       if (dir->type != MYFS_TYPE_DIR) {
+            printf("ERROR: Path is not a directory (type=%d)\n", dir->type);
             *errnoptr = ENOTDIR;
             return -1;
       }
+      printf("Confirmed path is a directory\n");
 
       // Count entries
+      printf("Counting directory entries...\n");
       int count = 0;
       myfs_offset_t curr_offset = dir->data_block;
+      myfs_offset_t dir_offset = ptr_to_offset(fsptr, dir);
+      printf("Directory offset: %zu, First entry offset: %zu\n", dir_offset, curr_offset);
       
       while (curr_offset != 0) {
-            myfs_file_t *entry = offset_to_ptr(fsptr, curr_offset);
-            if (!entry) break;
-            
-            // Only count entries that belong to this directory
-            if (entry->parent == ptr_to_offset(fsptr, dir)) {
-                  count++;
-            }
-            curr_offset = entry->next;
+      printf("Processing entry at offset: %zu\n", curr_offset);
+      myfs_file_t *entry = offset_to_ptr(fsptr, curr_offset);
+      if (!entry) {
+            printf("ERROR: Invalid entry pointer at offset %zu\n", curr_offset);
+            break;
+      }
+      
+      // Store the next offset before any other operations
+      myfs_offset_t next_offset = entry->next;
+      
+      // Only count entries that belong to this directory
+      if (entry->parent == dir_offset) {
+            count++;
       }
 
+      // Break if we detect a cycle - next points to current or previous entry
+      if (next_offset == curr_offset) {
+            printf("WARNING: Detected self-referential cycle at offset %zu\n", curr_offset);
+            break;
+      }
+      
+      curr_offset = next_offset;
+      }
+      printf("Found %d entries in directory\n", count);
+
       // No entries
-      if (count == 0) return 0;
+      if (count == 0) {
+            printf("Directory is empty (excluding . and ..)\n");
+            return 0;
+      }
+      printf("Allocating array for %d entries\n", count);
 
       // Allocate array for names
       *namesptr = calloc(count, sizeof(char *));
       if (!*namesptr) {
+            printf("ERROR: Failed to allocate memory for names array\n");
             *errnoptr = ENOMEM;
             return -1;
       }
+      printf("Successfully allocated names array\n");
 
       // Fill array with names
+      printf("Filling names array...\n");
       curr_offset = dir->data_block;
       int index = 0;
       
       while (curr_offset != 0 && index < count) {
+            printf("Processing entry %d at offset %zu\n", index, curr_offset);
             myfs_file_t *entry = offset_to_ptr(fsptr, curr_offset);
-            if (!entry) break;
+            if (!entry) {
+                  printf("ERROR: Invalid entry pointer during array fill\n");
+                  break;
+            }
+            
+            printf("Entry: name='%s', parent=%zu, dir_offset=%zu\n", 
+                  entry->name, entry->parent, ptr_to_offset(fsptr, dir));
             
             if (entry->parent == ptr_to_offset(fsptr, dir)) {
+                  printf("Adding entry '%s' to names array at index %d\n", entry->name, index);
                   (*namesptr)[index] = strdup(entry->name);
                   if (!(*namesptr)[index]) {
+                  printf("ERROR: Failed to duplicate name string\n");
                   // Cleanup on error
                   for (int i = 0; i < index; i++) {
                         free((*namesptr)[i]);
@@ -1061,10 +1107,13 @@ int __myfs_readdir_implem(void *fsptr, size_t fssize, int *errnoptr,
                   return -1;
                   }
                   index++;
+            } else {
+                  printf("Skipping entry - belongs to different directory\n");
             }
             curr_offset = entry->next;
       }
 
+      printf("=== READDIR END === (returning %d entries)\n", count);
       return count;
 }
 
@@ -1284,52 +1333,84 @@ int __myfs_rmdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
       myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
       if (!header) return -1;
 
-      // Find directory to remove
-      myfs_file_t *dir = find_file(header, path);
-      if (!dir) {
+      // Get parent directory and dirname
+      char *dirname;
+      myfs_file_t *parent_dir = find_parent_dir(fsptr, path, &dirname, errnoptr);
+      if (!parent_dir) {
+            return -1;
+      }
+
+      // Find directory to remove in parent
+      myfs_file_t *dir_to_remove = find_entry_in_dir(fsptr, parent_dir, dirname);
+      free(dirname); // Free dirname as we don't need it anymore
+
+      if (!dir_to_remove) {
             *errnoptr = ENOENT;
             return -1;
       }
 
       // Verify it's a directory
-      if (dir->type != MYFS_TYPE_DIR) {
+      if (dir_to_remove->type != MYFS_TYPE_DIR) {
             *errnoptr = ENOTDIR;
             return -1;
       }
 
-      // Check if directory is empty
-      if (dir->data_block != 0) {
-            printf("rmdir: directory not empty (data_block: %zu)\n", dir->data_block);
-            *errnoptr = ENOTEMPTY;
-            return -1;
+      // Check directory is empty by scanning its entries
+      myfs_offset_t curr_child = dir_to_remove->data_block;
+      while (curr_child != 0) {
+            myfs_file_t *child = offset_to_ptr(fsptr, curr_child);
+            if (!child) {
+                  *errnoptr = EFAULT;
+                  return -1;
+            }
+            
+            // Only count entries that belong to this directory
+            if (child->parent == ptr_to_offset(fsptr, dir_to_remove)) {
+                  *errnoptr = ENOTEMPTY;
+                  return -1;
+            }
+            curr_child = child->next;
       }
 
-      // Find parent directory
-      myfs_file_t *parent = offset_to_ptr(fsptr, dir->parent);
-      if (!parent) {
-            *errnoptr = EFAULT;
-            return -1;
-      }
-
-      // Remove from parent's list
-      myfs_offset_t *prev_ptr = &parent->data_block;
-      myfs_offset_t curr = parent->data_block;
-
-      while (curr != 0) {
-            myfs_file_t *entry = offset_to_ptr(fsptr, curr);
-            if (!entry) {
+      // Remove directory from parent's list
+      myfs_offset_t prev_offset = 0;
+      myfs_offset_t curr_offset = parent_dir->data_block;
+      
+      while (curr_offset != 0) {
+            myfs_file_t *curr = offset_to_ptr(fsptr, curr_offset);
+            if (!curr) {
                   *errnoptr = EFAULT;
                   return -1;
             }
 
-            if (entry == dir) {
-                  *prev_ptr = entry->next;
-                  free_block(fsptr, curr);
+            if (curr == dir_to_remove) {
+                  // Update links
+                  if (prev_offset == 0) {
+                  parent_dir->data_block = curr->next;
+                  } else {
+                  myfs_file_t *prev = offset_to_ptr(fsptr, prev_offset);
+                  if (!prev) {
+                        *errnoptr = EFAULT;
+                        return -1;
+                  }
+                  prev->next = curr->next;
+                  }
+
+                  // Clear parent reference and free the directory entry
+                  curr->parent = 0;
+                  free_block(fsptr, curr_offset);
+                  
+                  // Update parent timestamp
+                  struct timespec current_time;
+                  clock_gettime(CLOCK_REALTIME, &current_time);
+                  parent_dir->last_modified_time = current_time;
+                  parent_dir->last_access_time = current_time;
+                  
                   return 0;
             }
 
-            prev_ptr = &entry->next;
-            curr = entry->next;
+            prev_offset = curr_offset;
+            curr_offset = curr->next;
       }
 
       *errnoptr = ENOENT;
@@ -1440,72 +1521,69 @@ int __myfs_mkdir_implem(void *fsptr, size_t fssize, int *errnoptr, const char *p
 int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
                          const char *from, const char *to) {
       
-      //check params
+      // Check parameters
       if (!fsptr || !from || !to || !errnoptr) {
-            if (errnoptr){
+            if (errnoptr) {
                   *errnoptr = EFAULT;
             }
             return -1;
       }
 
-      //if paths trying to change are th e same we do nothing
-      if(strcmp(from, to) == 0){
+      // If paths are the same, do nothing
+      if (strcmp(from, to) == 0) {
             return 0;
       }
       
-      //check if intialized and get header
+      // Get filesystem header
       myfs_header_t *header = get_fs_header(fsptr, fssize, errnoptr);
       if (!header) {
             *errnoptr = EFAULT;
             return -1;
       }
 
-      //get root directory as need it for path traversal
+      // Get root directory for path traversal
       myfs_file_t *root_dir = offset_to_ptr(fsptr, header->root_dir);
       if (!root_dir) {
             *errnoptr = EFAULT;
             return -1;
       }
 
-      //find the aprent dir of the from path and gets the filename
+      // Find source parent directory and name
       char *from_name;
       myfs_file_t *from_parent = find_parent_dir(fsptr, from, &from_name, errnoptr);
-      if(from_parent == NULL){
+      if (!from_parent) {
             return -1;
       }
 
-      //find souce entry its parent dir
-      //keeps track of previous entry
+      // Find source entry in its parent directory
       myfs_offset_t prev_offset = 0;
-      //current entry bieng checked
       myfs_offset_t curr_offset = from_parent->data_block;
-      //store pointer to from entry when found
-      myfs_file_t * from_entry = NULL;
+      myfs_file_t *from_entry = NULL;
 
-      //loop through entreies in parent dir
-      while(curr_offset != 0){
-            //convert offsent to pointer for curr entry
+      // Loop through parent directory entries
+      while (curr_offset != 0) {
             myfs_file_t *curr_ptr = offset_to_ptr(fsptr, curr_offset);
+            if (!curr_ptr) {
+                  free(from_name);
+                  *errnoptr = EFAULT;
+                  return -1;
+            }
             
-            //if curr entrys name mathces what we looking for
-            if(strcmp(curr_ptr->name, from_name) == 0){
-                  //store pointer to found entry
+            if (strcmp(curr_ptr->name, from_name) == 0) {
                   from_entry = curr_ptr;
                   break;
             }
-            //move to next entry
             prev_offset = curr_offset;
             curr_offset = curr_ptr->next;
       }
 
-      //if the source was not found return error
-      if(from_entry == NULL){
+      if (!from_entry) {
             free(from_name);
             *errnoptr = ENOENT;
             return -1;
       }
 
-      //find parent dir of TO path and get filename
+      // Find destination parent directory and name
       char *to_name;
       myfs_file_t *to_parent = find_parent_dir(fsptr, to, &to_name, errnoptr);
       if (!to_parent) {
@@ -1513,12 +1591,13 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
             return -1;
       }
 
-      //check if it already exits at the to path
-      myfs_file_t *existing_to = find_entry(fsptr, to_parent, to_name);
-      
-      //if destination exists, handle according to type
+      // Save the original next pointer before any modifications
+      myfs_offset_t original_next = from_entry->next;
+
+      // Check if destination exists
+      myfs_file_t *existing_to = find_entry_in_dir(fsptr, to_parent, to_name);
       if (existing_to) {
-            //cannot overwrite a directory with a non-directory
+            // Cannot overwrite directory with non-directory
             if (existing_to->type == MYFS_TYPE_DIR && from_entry->type != MYFS_TYPE_DIR) {
                   free(from_name);
                   free(to_name);
@@ -1526,7 +1605,7 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
                   return -1;
             }
             
-            //cannot overwrite a non-directory with a directory
+            // Cannot overwrite non-directory with directory
             if (existing_to->type != MYFS_TYPE_DIR && from_entry->type == MYFS_TYPE_DIR) {
                   free(from_name);
                   free(to_name);
@@ -1534,7 +1613,7 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
                   return -1;
             }
 
-            //if destination is a directory, it must be empty
+            // Directory must be empty if it's being overwritten
             if (existing_to->type == MYFS_TYPE_DIR && existing_to->data_block != 0) {
                   free(from_name);
                   free(to_name);
@@ -1542,15 +1621,12 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
                   return -1;
             }
 
-            //remove existing destination entry from parent dir
+            // Remove existing destination entry
             myfs_offset_t existing_prev = 0;
             myfs_offset_t existing_curr = to_parent->data_block;
 
-            //loopp through dir entries
             while (existing_curr != 0) {
                   myfs_file_t *curr = offset_to_ptr(fsptr, existing_curr);
-
-                  //found
                   if (strcmp(curr->name, to_name) == 0) {
                         if (existing_prev == 0) {
                               to_parent->data_block = curr->next;
@@ -1560,31 +1636,36 @@ int __myfs_rename_implem(void *fsptr, size_t fssize, int *errnoptr,
                         }
                         break;
                   }
-                  //move to next entry
                   existing_prev = existing_curr;
                   existing_curr = curr->next;
             }
       }
-      
-      //remove entry from source directory
+
+      // Update source directory links
       if (prev_offset == 0) {
-            from_parent->data_block = from_entry->next;
+            from_parent->data_block = original_next;
       } else {
             myfs_file_t *prev = offset_to_ptr(fsptr, prev_offset);
-            prev->next = from_entry->next;
+            if (prev) {
+                  prev->next = original_next;
+            }
       }
 
-      //copy new name into entry
+      // Update the entry itself
       strncpy(from_entry->name, to_name, MYFS_MAX_FILENAME);
-      //update parent pointer ro new parent dir
       from_entry->parent = ptr_to_offset(fsptr, to_parent);
       
-      //make entrys next pointer point to curr first entry
+      // Update destination directory links
       from_entry->next = to_parent->data_block;
-      //make sur point to our entry as new first entry
       to_parent->data_block = ptr_to_offset(fsptr, from_entry);
 
-      //free and return
+      // Update timestamps
+      struct timespec current_time;
+      clock_gettime(CLOCK_REALTIME, &current_time);
+      from_parent->last_modified_time = current_time;
+      to_parent->last_modified_time = current_time;
+
+      // Cleanup
       free(from_name);
       free(to_name);
       return 0;
