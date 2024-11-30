@@ -1729,6 +1729,8 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
                   current_block = next_block;            // Move to next block
             }
 
+            memcpy(file->data_block + offset, '\0', 1);
+
       } // If the size will be expanded
       else {
            // Extend by adding zeros
@@ -1754,7 +1756,7 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
             }
 
             // Copy the memory from old space to new space
-            memcpy(new_space, file_data, file->size);
+            memcpy(new_space, file_data, file->size - 1);
 
             // Free old memory space
             free_block(fsptr, file->data_block);
@@ -1763,7 +1765,8 @@ int __myfs_truncate_implem(void *fsptr, size_t fssize, int *errnoptr,
             file->data_block = new_block;
 
             // Append zeros in the remaining space
-            memset(new_space + file->size, 0, bytes_to_add);
+            memset(new_space + file->size - 1, 0, bytes_to_add);
+            memset(new_space + offset, '\0', 1);
       }
 
       // Update file size
